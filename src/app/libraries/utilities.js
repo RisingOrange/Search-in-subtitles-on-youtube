@@ -326,7 +326,9 @@ window.Utilities = {
 
     const jsonTimedText = [];
     const paragraphs = doc
-      ? (doc.querySelectorAll ? Array.from(doc.querySelectorAll("p")) : Array.from(doc.getElementsByTagName("p")))
+      ? doc.querySelectorAll
+        ? Array.from(doc.querySelectorAll("p"))
+        : Array.from(doc.getElementsByTagName("p"))
       : [];
 
     paragraphs.forEach((p) => {
