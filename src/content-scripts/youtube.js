@@ -93,7 +93,7 @@
   };
 
   const logic = {
-    handleMessage(event) {
+    async handleMessage(event) {
       let extension_url = chrome.runtime.getURL("").slice(0, -1);
       if (event.origin !== extension_url) {
         return;
@@ -118,12 +118,128 @@
         case "SEARCH.UPDATE_HEIGHT":
           state.SEARCH_IFRAME.style.height = data.payload;
           break;
+        case "HTTP.GET_TEXT": {
+          try {
+            const res = await fetch(data.payload.url, {
+              credentials: "include",
+            });
+            const text = await res.text();
+            event.source.postMessage(
+              {
+                action: "HTTP.GET_TEXT.RESULT",
+                requestId: data.requestId,
+                ok: true,
+                status: res.status,
+                text,
+              },
+              extension_url,
+            );
+          } catch (e) {
+            event.source.postMessage(
+              {
+                action: "HTTP.GET_TEXT.RESULT",
+                requestId: data.requestId,
+                ok: false,
+                error: e?.message || String(e),
+              },
+              extension_url,
+            );
+          }
+          break;
+        }
+
+        case "YT.POST_JSON_INJECT": {
+          const requestId = data.requestId;
+          const { url, body, headers } = data.payload || {};
+          try {
+            const result = await injectAndPostJson(
+              requestId,
+              url,
+              body,
+              headers,
+            );
+            event.source.postMessage(
+              {
+                action: "YT.POST_JSON_INJECT.RESULT",
+                requestId,
+                ok: true,
+                result,
+              },
+              extension_url,
+            );
+          } catch (e) {
+            event.source.postMessage(
+              {
+                action: "YT.POST_JSON_INJECT.RESULT",
+                requestId,
+                ok: false,
+                error: e?.message || String(e),
+              },
+              extension_url,
+            );
+          }
+          break;
+        }
         default:
           console.log("UNSUPPORTED ACTION", data);
           break;
       }
     },
   };
+
+  // Listen for page-injected script responses
+  function onPageMessage(event) {
+    if (event.source !== window) return;
+    const data = event.data || {};
+    if (data.source !== "YT_INJECT" || data.type !== "YT.PAGE_DATA") return;
+    const cb = pendingPageData[data.requestId];
+    if (cb) {
+      delete pendingPageData[data.requestId];
+      cb(data);
+    }
+  }
+
+  const pendingPageData = {};
+  window.addEventListener("message", onPageMessage);
+
+  function injectAndPostJson(requestId, url, body, headers) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        delete pendingPageData[requestId];
+        reject(new Error("Injected POST timeout"));
+      }, 10000);
+
+      pendingPageData[requestId] = (msg) => {
+        clearTimeout(timeout);
+        if (msg.error) reject(new Error(msg.error));
+        else resolve({ json: msg.json || null, status: msg.status || 0 });
+      };
+
+      const script = document.createElement("script");
+      script.textContent = `(() => {
+        const reqId = '${requestId}';
+        const u = ${JSON.stringify(url)};
+        const b = ${JSON.stringify(body || {})};
+        const h = ${JSON.stringify(headers || {})};
+        const finalHeaders = Object.assign({ 'content-type': 'application/json' }, h || {});
+        fetch(u, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: finalHeaders,
+          body: typeof b === 'string' ? b : JSON.stringify(b)
+        }).then(async (r) => {
+          const status = r.status;
+          let json = null;
+          try { json = await r.json(); } catch (_) {}
+          window.postMessage({ source: 'YT_INJECT', type: 'YT.PAGE_DATA', requestId: reqId, status, json }, '*');
+        }).catch(e => {
+          window.postMessage({ source: 'YT_INJECT', type: 'YT.PAGE_DATA', requestId: reqId, error: String(e) }, '*');
+        });
+      })();`;
+      (document.head || document.documentElement).appendChild(script);
+      script.remove();
+    });
+  }
 
   function setup(url) {
     state.SEARCH_BOX_VISIBILITY = false;
