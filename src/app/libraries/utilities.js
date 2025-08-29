@@ -314,30 +314,34 @@ window.Utilities = {
     return caption_track.baseUrl + "&fmt=srv3&xorb=2&xobt=3&xovt=3";
   },
   _parseTimedText(xml) {
-    let xmlDocument = document.implementation.createHTMLDocument("");
-    xmlDocument.write(xml);
-    let jsonTimedText = [];
-    Array.from(xmlDocument.querySelectorAll("p")).forEach((p) => {
-      let time = parseInt(p.getAttribute("t"));
-      let text = p.innerText
+    let doc = null;
+    try {
+      doc = new DOMParser().parseFromString(xml, "application/xml");
+    } catch (_) {}
+    try {
+      if (!doc || doc.getElementsByTagName("parsererror").length) {
+        doc = new DOMParser().parseFromString(xml, "text/html");
+      }
+    } catch (_) {}
+
+    const jsonTimedText = [];
+    const paragraphs = doc
+      ? (doc.querySelectorAll ? Array.from(doc.querySelectorAll("p")) : Array.from(doc.getElementsByTagName("p")))
+      : [];
+
+    paragraphs.forEach((p) => {
+      const time = parseInt(p.getAttribute("t"));
+      let text = (p.textContent || "")
         .toLowerCase()
         .replace(/\n/gi, " ")
         .replace(/\[.*\]/gim, "")
         .replace(/\(.*\)/gim, "")
         .replace(/[^\p{Letter}0-9\s]/gimu, "")
         .trim();
-      if (!text) {
-        return;
-      }
-      let words = text.split(" ");
-      words.forEach((word) => {
-        if (!word) {
-          return;
-        }
-        jsonTimedText.push({
-          word: word,
-          time,
-        });
+      if (!text) return;
+      text.split(" ").forEach((word) => {
+        if (!word) return;
+        jsonTimedText.push({ word, time });
       });
     });
     return jsonTimedText;
