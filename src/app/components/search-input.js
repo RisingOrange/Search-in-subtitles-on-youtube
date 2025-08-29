@@ -26,7 +26,9 @@ async function SearchInput(url) {
     });
 
     $refs.search_input.value = "";
-    $refs.dropdown.innerHTML = "";
+    while ($refs.dropdown.firstChild) {
+      $refs.dropdown.removeChild($refs.dropdown.firstChild);
+    }
     handleCloseButtonClicked();
   }
 
@@ -76,7 +78,9 @@ async function SearchInput(url) {
     }
 
     SUGGESTIONS_INDEX = -1;
-    $refs.dropdown.innerHTML = "";
+    while ($refs.dropdown.firstChild) {
+      $refs.dropdown.removeChild($refs.dropdown.firstChild);
+    }
 
     const value = event.target.value.toLowerCase();
 

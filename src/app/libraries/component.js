@@ -19,7 +19,6 @@
         case "value":
         case "className":
         case "innerText":
-        case "innerHTML":
           el[key] = props[key];
           break;
         case "style":
