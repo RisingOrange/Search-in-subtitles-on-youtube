@@ -55,23 +55,33 @@
     },
     searchButton() {
       // Idempotent: reuse if it exists
-      const existing = document.getElementById("subtitle-search-button");
+      const id = "subtitle-search-button";
+      const existing = document.getElementById(id);
       if (existing) return existing;
 
       const btn = document.createElement("button");
       btn.type = "button";
       btn.classList.add("ytp-button");
-      btn.id = "subtitle-search-button";
-      btn.setAttribute("data-priority", "6");
+      btn.id = id;
       btn.setAttribute("aria-label", "Subtitle search");
-      btn.dataset.tooltipTitle = "Subtitle search";
 
       const ns = "http://www.w3.org/2000/svg";
       const svg = document.createElementNS(ns, "svg");
       svg.setAttribute("viewBox", "0 0 1792 1792");
-      svg.setAttribute("width", "24");
-      svg.setAttribute("height", "24");
-      svg.style.display = "block";
+      svg.setAttribute("focusable", "false");
+      svg.setAttribute("aria-hidden", "true");
+      svg.classList.add("ytp-svg-fill");
+
+      // Force consistent size + centering
+      btn.style.position = "relative";
+      svg.style.setProperty("width", "24px", "important");
+      svg.style.setProperty("height", "24px", "important");
+      svg.style.setProperty("display", "block", "important");
+      svg.style.setProperty("position", "absolute", "important");
+      svg.style.setProperty("top", "50%", "important");
+      svg.style.setProperty("left", "50%", "important");
+      svg.style.setProperty("transform", "translate(-50%, -50%)", "important");
+      svg.style.setProperty("margin", "0", "important");
 
       const path = document.createElementNS(ns, "path");
       path.setAttribute("fill", "currentColor");
@@ -83,7 +93,6 @@
       svg.appendChild(path);
       btn.appendChild(svg);
 
-      btn.id = "subtitle-search-button";
       btn.addEventListener("click", render.toggleSearchInputVisibility);
 
       return btn;
