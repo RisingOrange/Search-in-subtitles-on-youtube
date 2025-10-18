@@ -32,7 +32,7 @@ async function SearchInput(url) {
     handleCloseButtonClicked();
   }
 
-  function keyboardShortcuts(event) {
+  function handleKeyDown(event) {
     let result = false;
     switch (event.keyCode) {
       // Enter
@@ -42,6 +42,26 @@ async function SearchInput(url) {
         }
         result = true;
         break;
+      // Escape
+      case 27:
+        handleCloseButtonClicked();
+        result = true;
+        break;
+      // ArrowUp and ArrowDown - prevent cursor movement
+      case 38:
+      case 40:
+        result = true;
+        break;
+    }
+    if (result) {
+      event.preventDefault();
+    }
+    return result;
+  }
+
+  function handleKeyUp(event) {
+    let result = false;
+    switch (event.keyCode) {
       case 38:
         // ArrowUp
         result = true;
@@ -69,11 +89,8 @@ async function SearchInput(url) {
         }
         break;
     }
-    return result;
-  }
 
-  function handleInput(event) {
-    if (keyboardShortcuts(event)) {
+    if (result) {
       return;
     }
 
@@ -131,7 +148,8 @@ async function SearchInput(url) {
       class: "relative",
       children: [
         input({
-          onKeyUp: handleInput,
+          onKeyDown: handleKeyDown,
+          onKeyUp: handleKeyUp,
           ref: "search_input",
           spellcheck: "false",
           placeholder: "Search in video...",
