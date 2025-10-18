@@ -53,32 +53,40 @@
       );
       return iframe;
     },
-    baseButton() {
-      const button = document.createElement("button");
-      button.style.display = "none";
-      button.style.textAlign = "center";
-      button.classList.add("ytp-button");
-      return button;
-    },
     searchButton() {
-      const button = render.baseButton();
-      // Build SVG icon safely without innerHTML
+      // Idempotent: reuse if it exists
+      const existing = document.getElementById("subtitle-search-button");
+      if (existing) return existing;
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.classList.add("ytp-button");
+      btn.id = "subtitle-search-button";
+      btn.setAttribute("data-priority", "6");
+      btn.setAttribute("aria-label", "Subtitle search");
+      btn.dataset.tooltipTitle = "Subtitle search";
+
       const ns = "http://www.w3.org/2000/svg";
       const svg = document.createElementNS(ns, "svg");
-      svg.setAttribute("width", "56%");
-      svg.setAttribute("height", "100%");
       svg.setAttribute("viewBox", "0 0 1792 1792");
+      svg.setAttribute("width", "24");
+      svg.setAttribute("height", "24");
+      svg.style.display = "block";
+
       const path = document.createElementNS(ns, "path");
-      path.setAttribute("fill", "#ffffff");
+      path.setAttribute("fill", "currentColor");
       path.setAttribute(
         "d",
-        "M1216 832q0-185-131.5-316.5t-316.5-131.5-316.5 131.5-131.5 316.5 131.5 316.5 316.5 131.5 316.5-131.5 131.5-316.5zm512 832q0 52-38 90t-90 38q-54 0-90-38l-343-342q-179 124-399 124-143 0-273.5-55.5t-225-150-150-225-55.5-273.5 55.5-273.5 150-225 225-150 273.5-55.5 273.5 55.5 225 150 150 225 55.5 273.5q0 220-124 399l343 343q37 37 37 90z",
+        "M1216 832q0-185-131.5-316.5t-316.5-131.5-316.5 131.5-131.5 316.5 131.5 316.5 316.5 131.5 316.5-131.5 131.5-316.5zm512 832q0 52-38 90t-90 38q-54 0-90-38l-343-342q-179 124-399 124-143 0-273.5-55.5t-225-150-150-225-55.5-273.5 55.5-273.5 150-225 225-150 273.5-55.5 273.5 55.5 225 150 150 225 55.5 273.5q0 220-124 399l343 343q37 37 37 90z"
       );
+
       svg.appendChild(path);
-      button.appendChild(svg);
-      button.id = "subtitle-search-button";
-      button.addEventListener("click", render.toggleSearchInputVisibility);
-      return button;
+      btn.appendChild(svg);
+
+      btn.id = "subtitle-search-button";
+      btn.addEventListener("click", render.toggleSearchInputVisibility);
+
+      return btn;
     },
     byState() {
       if (!state.SEARCH_IFRAME) return;
