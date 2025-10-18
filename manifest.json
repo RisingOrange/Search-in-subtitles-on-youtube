@@ -16,7 +16,10 @@
    "web_accessible_resources": [ "src/app/*", "src/app/libraries/*.js", "src/app/components/*.js" ],
    "browser_specific_settings": {
       "gecko": {
-        "id": "youtube_subtitle_search@foo"
+        "id": "youtube_subtitle_search@foo",
+        "data_collection_permissions": {
+          "required": ["none"]
+        }
       }
    },
    "background": {
