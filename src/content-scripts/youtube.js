@@ -98,19 +98,20 @@
       return btn;
     },
     byState() {
-      if (!state.SEARCH_IFRAME) return;
+      if (!state.SEARCH_IFRAME || !state.YOUTUBE_PLAYER) return;
 
-      if (!state.SEARCH_BOX_VISIBILITY) {
+      if (state.SEARCH_BOX_VISIBILITY) {
+        state.SEARCH_IFRAME.style.display = "block";
+      } else if (!state.MOUSE_OVER_FRAME) {
+        // Only hide if mouse is not over frame (allow interaction to complete)
         state.SEARCH_IFRAME.style.display = "none";
-        return;
       }
-      if (state.MOUSE_OVER_FRAME || !state.YOUTUBE_PLAYER) {
-        return;
-      }
-      state.SEARCH_IFRAME.style.display = "block";
     },
     toggleSearchInputVisibility() {
       state.SEARCH_BOX_VISIBILITY = !state.SEARCH_BOX_VISIBILITY;
+      if (state.SEARCH_BOX_VISIBILITY) {
+        state.MOUSE_OVER_FRAME = false; // Reset to ensure it shows
+      }
       render.byState();
       if (state.SEARCH_BOX_VISIBILITY) {
         setTimeout(() => {
@@ -134,6 +135,7 @@
           break;
         case "SEARCH.CLOSE":
           state.SEARCH_BOX_VISIBILITY = false;
+          state.MOUSE_OVER_FRAME = false; // Reset so it actually hides
           render.byState();
           break;
         case "SKIP":
@@ -208,6 +210,35 @@
           }
           break;
         }
+
+        case "YT.GET_PLAYER_CAPTIONS": {
+          const requestId = data.requestId;
+          try {
+            const result = await getPlayerCaptions(requestId);
+            event.source.postMessage(
+              {
+                action: "YT.GET_PLAYER_CAPTIONS.RESULT",
+                requestId,
+                ok: true,
+                captions: result.captions,
+                transcriptCues: result.transcriptCues,
+              },
+              extension_url,
+            );
+          } catch (e) {
+            event.source.postMessage(
+              {
+                action: "YT.GET_PLAYER_CAPTIONS.RESULT",
+                requestId,
+                ok: false,
+                error: e?.message || String(e),
+              },
+              extension_url,
+            );
+          }
+          break;
+        }
+
         default:
           console.log("UNSUPPORTED ACTION", data);
           break;
@@ -269,8 +300,209 @@
     });
   }
 
+  // Minimal page-context bridge: just reads ytInitialData and posts it back
+  function injectAndGetYtInitialData(requestId) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        delete pendingPageData[requestId];
+        reject(new Error("ytInitialData timeout"));
+      }, 5000);
+
+      pendingPageData[requestId] = (msg) => {
+        clearTimeout(timeout);
+        if (msg.error) reject(new Error(msg.error));
+        else resolve(msg.data || null);
+      };
+
+      const script = document.createElement("script");
+      script.textContent = `(() => {
+        const reqId = '${requestId}';
+        try {
+          window.postMessage({ source: 'YT_INJECT', type: 'YT.PAGE_DATA', requestId: reqId, data: window.ytInitialData || null }, '*');
+        } catch(e) {
+          window.postMessage({ source: 'YT_INJECT', type: 'YT.PAGE_DATA', requestId: reqId, error: String(e) }, '*');
+        }
+      })();`;
+      (document.head || document.documentElement).appendChild(script);
+      script.remove();
+    });
+  }
+
+  // Parse transcript cues from ytInitialData
+  function parseTranscriptFromYtInitialData(ytInitialData) {
+    const transcriptCues = [];
+    if (!ytInitialData) return transcriptCues;
+
+    const findTranscript = (obj) => {
+      if (!obj || typeof obj !== 'object') return;
+      if (obj.transcriptSearchPanelRenderer) {
+        const sr = obj.transcriptSearchPanelRenderer;
+        if (sr.body && sr.body.transcriptSegmentListRenderer) {
+          const segments = sr.body.transcriptSegmentListRenderer.initialSegments || [];
+          for (const seg of segments) {
+            if (seg.transcriptSegmentRenderer) {
+              const r = seg.transcriptSegmentRenderer;
+              const startMs = parseInt(r.startMs || '0');
+              const text = r.snippet?.runs?.map(run => run.text).join('') || '';
+              if (text) transcriptCues.push({ startMs, text });
+            }
+          }
+        }
+      }
+      for (const k in obj) {
+        if (typeof obj[k] === 'object') findTranscript(obj[k]);
+      }
+    };
+    findTranscript(ytInitialData);
+
+    // Deduplicate cues (ytInitialData sometimes contains the transcript twice)
+    const seen = new Set();
+    const dedupedCues = [];
+    for (const cue of transcriptCues) {
+      const key = `${cue.startMs}:${cue.text}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        dedupedCues.push(cue);
+      }
+    }
+    return dedupedCues;
+  }
+
+  // Helper to wait for selector with polling
+  async function waitForSelector(parent, selector, maxWait = 8000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWait) {
+      const el = parent.querySelectorAll(selector);
+      if (el.length > 0) return el;
+      await new Promise(r => setTimeout(r, 300));
+    }
+    return parent.querySelectorAll(selector);
+  }
+
+  // Scrape transcript from DOM (content script can access DOM directly)
+  async function scrapeTranscriptFromDOM() {
+    const transcriptCues = [];
+    let hiddenStyle = null;
+
+    try {
+      // Find transcript button (structural selector, language-agnostic)
+      const transcriptBtn = document.querySelector('ytd-video-description-transcript-section-renderer button');
+      if (!transcriptBtn) return transcriptCues;
+
+      // Hide panel with opacity and position:fixed to avoid layout shift
+      // (visibility:hidden prevents rendering, so we use opacity instead)
+      hiddenStyle = document.createElement('style');
+      hiddenStyle.textContent = 'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"] { opacity: 0 !important; pointer-events: none !important; position: fixed !important; top: 0 !important; left: 0 !important; }';
+      document.head.appendChild(hiddenStyle);
+
+      transcriptBtn.click();
+      await new Promise(r => setTimeout(r, 500));
+
+      // Find and scrape transcript panel
+      const transcriptPanel = document.querySelector('ytd-transcript-renderer, ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]');
+
+      if (transcriptPanel) {
+        const segments = await waitForSelector(transcriptPanel, 'ytd-transcript-segment-renderer');
+
+        // Wait for content to load - YouTube lazy loads transcript text
+        const waitForContent = async (maxWait = 5000) => {
+          const start = Date.now();
+          while (Date.now() - start < maxWait) {
+            if (segments.length > 0 && segments[0].innerText && segments[0].innerText.trim()) {
+              return true;
+            }
+            await new Promise(r => setTimeout(r, 200));
+          }
+          return false;
+        };
+
+        await waitForContent();
+
+        for (const seg of segments) {
+          // Try to find structured elements first
+          const tsEl = seg.querySelector('.segment-timestamp, [class*="timestamp"]');
+          const txtEl = seg.querySelector('.segment-text, [class*="text"], yt-formatted-string');
+
+          let timeText = '';
+          let text = '';
+
+          if (tsEl && txtEl) {
+            timeText = tsEl.innerText.trim();
+            text = txtEl.innerText.trim();
+          } else {
+            // Fallback: parse innerText
+            const fullText = seg.innerText.trim();
+            const lines = fullText.split(/[\n\r]+/).filter(l => l.trim());
+
+            if (lines.length >= 2) {
+              timeText = lines[0].trim();
+              text = lines.slice(1).join(' ').trim();
+            } else if (lines.length === 1) {
+              const match = lines[0].match(/^(\d+:\d+(?::\d+)?)\s*(.*)/);
+              if (match) {
+                timeText = match[1];
+                text = match[2];
+              } else {
+                text = lines[0];
+              }
+            }
+          }
+
+          // Parse timestamp
+          let startMs = 0;
+          if (timeText) {
+            const parts = timeText.split(':').map(p => parseInt(p) || 0);
+            if (parts.length === 2) startMs = (parts[0] * 60 + parts[1]) * 1000;
+            else if (parts.length === 3) startMs = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
+          }
+
+          if (text) transcriptCues.push({ startMs, text });
+        }
+      }
+
+      // Close panel
+      const engagementPanel = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]');
+      if (engagementPanel) {
+        const closeBtn = engagementPanel.querySelector('#visibility-button button');
+        if (closeBtn) {
+          closeBtn.click();
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+    } finally {
+      // Always clean up hidden style
+      if (hiddenStyle) hiddenStyle.remove();
+    }
+
+    return transcriptCues;
+  }
+
+  // Main function to get player captions
+  async function getPlayerCaptions(requestId) {
+    // Method 1: Try ytInitialData first (requires page-context bridge)
+    try {
+      const ytInitialData = await injectAndGetYtInitialData(requestId);
+      const transcriptCues = parseTranscriptFromYtInitialData(ytInitialData);
+      if (transcriptCues.length > 0) {
+        return { captions: [], transcriptCues };
+      }
+    } catch (e) {
+      // Continue to DOM scraping
+    }
+
+    // Method 2: Scrape from transcript panel DOM (content script can do this directly)
+    const transcriptCues = await scrapeTranscriptFromDOM();
+
+    if (transcriptCues.length === 0) {
+      console.warn('[YT-Search] No transcript found. The video may not have captions.');
+    }
+
+    return { captions: [], transcriptCues };
+  }
+
   function setup(url) {
     state.SEARCH_BOX_VISIBILITY = false;
+    state.MOUSE_OVER_FRAME = false;
 
     if (!helpers.isVideoURL(url)) {
       return;
@@ -322,7 +554,7 @@
   setInterval(render.byState, 10);
   window.addEventListener("message", logic.handleMessage);
 
-  chrome.runtime.onMessage.addListener((data, sender) => {
+  chrome.runtime.onMessage.addListener((data) => {
     if (data == "toggle-search-input") {
       render.toggleSearchInputVisibility();
     }

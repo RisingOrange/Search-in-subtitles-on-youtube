@@ -126,227 +126,59 @@ window.Utilities = {
     Utilities.postMessage(msg);
     return p;
   },
+  async _getPlayerCaptions() {
+    // Try to get captions from transcript panel or player
+    Utilities._ensureBridge();
+    const requestId = `${Date.now()}_${++Utilities._reqId}`;
+    const action = "YT.GET_PLAYER_CAPTIONS";
+    const resultAction = "YT.GET_PLAYER_CAPTIONS.RESULT";
+    const msg = { action, payload: {}, requestId };
+    const p = new Promise((resolve, reject) => {
+      const key = `${resultAction}:${requestId}`;
+      Utilities._pending[key] = (data) => {
+        if (data.ok) resolve({ captions: data.captions || [], transcriptCues: data.transcriptCues || [] });
+        else reject(new Error(data.error || "Request failed"));
+      };
+      setTimeout(() => {
+        if (Utilities._pending[key]) {
+          delete Utilities._pending[key];
+          reject(new Error("Request timeout"));
+        }
+      }, 15000); // Longer timeout to allow panel to load
+    });
+    Utilities.postMessage(msg);
+    return p;
+  },
   async getSubtitles(caption_track) {
-    const text = await Utilities._downloadTimedText(caption_track);
-    if (text && text.length > 0) {
-      return Utilities._parseTimedText(text);
-    }
-    // Fallback: use youtubei get_transcript API when timedtext returns empty
-    try {
-      const transcriptWords = await Utilities._fetchTranscriptFallback();
-      return transcriptWords;
-    } catch (_) {
+    if (!caption_track) {
       return [];
     }
-  },
-  async _downloadTimedText(caption_track) {
-    let timedtextURL = await Utilities._getTimedTextUrl(caption_track);
 
-    if (!timedtextURL) {
-      return "";
-    }
-
-    // Fetch via content script (first-party context) to preserve cookies/origin
-    let text = "";
+    // Get captions from ytInitialData or transcript panel DOM
     try {
-      text = await Utilities._csGetText(timedtextURL);
-    } catch (e) {
-      // As a final fallback, try direct fetch (may be blocked or cookie-less)
-      try {
-        const res = await fetch(timedtextURL, { credentials: "include" });
-        text = await res.text();
-      } catch (_) {
-        text = "";
-      }
-    }
-    // Some responses return 200 with empty body if token missing or stale
-    if (text.length === 0) {
-      return "";
-    }
-    return text;
-  },
-  async _fetchTranscriptFallback() {
-    const url = Utilities.getYouTubeURL();
-    if (!url) return [];
-    // Fetch watch HTML to get API key, context and transcript params
-    let html = "";
-    try {
-      html = await Utilities._csGetText(url);
-    } catch (e) {
-      const res = await fetch(url, { credentials: "include" });
-      html = await res.text();
-    }
-    const apiKey = Utilities._extractBetween(
-      html,
-      '"INNERTUBE_API_KEY":"',
-      '"',
-    );
-    const innerTubeContext = Utilities._extractJsonAfter(
-      html,
-      '"INNERTUBE_CONTEXT":',
-    );
-    const visitorData = Utilities._extractBetween(
-      html,
-      '"VISITOR_DATA":"',
-      '"',
-    );
-    const clientName = Utilities._extractDigitsAfter(
-      html,
-      '"INNERTUBE_CONTEXT_CLIENT_NAME":',
-    );
-    const clientVersion = Utilities._extractBetween(
-      html,
-      '"INNERTUBE_CONTEXT_CLIENT_VERSION":"',
-      '"',
-    );
-    const params = Utilities._extractTranscriptParams(html);
-    if (!apiKey || !innerTubeContext || !params) return [];
-    const endpoint = `https://www.youtube.com/youtubei/v1/get_transcript?key=${apiKey}&prettyPrint=false`;
-    const body = { context: innerTubeContext, params };
-    const headers = {};
-    if (visitorData) headers["x-goog-visitor-id"] = visitorData;
-    if (clientName) headers["x-youtube-client-name"] = String(clientName);
-    if (clientVersion) headers["x-youtube-client-version"] = clientVersion;
-    // Inject into page to ensure visibility and first-party behavior
-    const json = await Utilities._csPostJsonInject(endpoint, body, headers);
-    return Utilities._parseTranscriptJson(json);
-  },
-  _extractTranscriptParams(html) {
-    // Try common patterns found in ytInitialData for transcript panel
-    // Pattern 1: "getTranscriptEndpoint":{"params":"..."}
-    let m = html.match(
-      /\"getTranscriptEndpoint\"\s*:\s*\{[^}]*\"params\"\s*:\s*\"([^\"]+)\"/,
-    );
-    if (m && m[1]) return m[1];
-    // Pattern 2: apiUrl:"/youtubei/v1/get_transcript" ... "params":"..."
-    m = html.match(
-      /apiUrl\":\"\\\/youtubei\\\/v1\\\/get_transcript\"[\s\S]{0,400}?\"params\"\s*:\s*\"([^\"]+)\"/,
-    );
-    if (m && m[1]) return m[1];
-    // Pattern 3: generic "get_transcript" nearby params
-    m = html.match(/get_transcript[\s\S]{0,200}?\"params\"\s*:\s*\"([^\"]+)\"/);
-    if (m && m[1]) return m[1];
-    return null;
-  },
-  _parseTranscriptJson(j) {
-    // Traverse known shapes to collect cues with start times and text
-    const words = [];
-    if (!j) return words;
-    // Helper to normalize a cue renderer into words
-    const pushCue = (cr) => {
-      if (!cr) return;
-      const startMs =
-        cr.startOffsetMs || (cr.cue && cr.cue.startOffsetMs) || cr.startMs;
-      const start = parseInt(startMs || "0");
-      let text = "";
-      const cue = cr.cue || cr || {};
-      if (cue.simpleText) text = cue.simpleText;
-      else if (cue.runs) text = (cue.runs || []).map((r) => r.text).join("");
-      text = (text || "")
-        .toLowerCase()
-        .replace(/\n/gi, " ")
-        .replace(/\[.*\]/gim, "")
-        .replace(/\(.*\)/gim, "")
-        .replace(/[^\p{Letter}0-9\s]/gimu, "")
-        .trim();
-      if (!text) return;
-      for (const w of text.split(" ")) {
-        if (!w) continue;
-        words.push({ word: w, time: start });
-      }
-    };
+      const result = await Utilities._getPlayerCaptions();
 
-    const actions = j.actions || [];
-    // Path 1: transcriptRenderer
-    for (const a of actions) {
-      const content = a?.updateEngagementPanelAction?.content;
-      const tr = content?.transcriptRenderer;
-      const body = tr?.body?.transcriptBodyRenderer;
-      const cueGroups = body?.cueGroups || [];
-      for (const g of cueGroups) {
-        const group = g.transcriptCueGroupRenderer || {};
-        const cues = group.cues || [];
-        for (const c of cues) pushCue(c.transcriptCueRenderer || c);
-      }
-    }
-    if (words.length > 0) return words;
-
-    // Path 2: searchable transcript panel variant (transcriptSegmentListRenderer.initialSegments)
-    for (const a of actions) {
-      const content = a?.updateEngagementPanelAction?.content;
-      const tr = content?.transcriptRenderer;
-      const sr = tr?.content?.transcriptSearchPanelRenderer;
-      const list = sr?.body?.transcriptSegmentListRenderer;
-      const items = list?.initialSegments || list?.contents || [];
-      for (const it of items) {
-        if (it.transcriptSegmentRenderer) {
-          const seg = it.transcriptSegmentRenderer;
-          const startMs =
-            seg.startMs ||
-            (seg.startTimeText && seg.startTimeText.simpleText) ||
-            0;
-          const runs = (seg.snippet && seg.snippet.runs) || [];
-          const text = runs.map((r) => r.text).join("");
-          pushCue({ startOffsetMs: startMs, cue: { simpleText: text } });
-        } else if (it.transcriptSectionHeaderRenderer) {
-          // ignore section headers
+      if (result?.transcriptCues && result.transcriptCues.length > 0) {
+        const words = [];
+        for (const cue of result.transcriptCues) {
+          const cleanText = (cue.text || "")
+            .toLowerCase()
+            .replace(/\n/gi, " ")
+            .replace(/\[.*\]/gim, "")
+            .replace(/\(.*\)/gim, "")
+            .replace(/[^\p{Letter}0-9\s]/gimu, "")
+            .trim();
+          if (!cleanText) continue;
+          for (const word of cleanText.split(" ")) {
+            if (!word) continue;
+            words.push({ word, time: cue.startMs });
+          }
         }
+        return words;
       }
-    }
-    if (words.length > 0) return words;
+    } catch (e) {}
 
-    // Path 3: deep walk for any transcriptCueRenderer occurrences
-    const walk = (obj) => {
-      if (!obj || typeof obj !== "object") return;
-      if (obj.transcriptCueRenderer) pushCue(obj.transcriptCueRenderer);
-      for (const k in obj) {
-        if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
-        const v = obj[k];
-        if (Array.isArray(v)) v.forEach(walk);
-        else if (v && typeof v === "object") walk(v);
-      }
-    };
-    walk(j);
-    return words;
-  },
-  async _getTimedTextUrl(caption_track) {
-    // to get one word per line
-    return caption_track.baseUrl + "&fmt=srv3&xorb=2&xobt=3&xovt=3";
-  },
-  _parseTimedText(xml) {
-    let doc = null;
-    try {
-      doc = new DOMParser().parseFromString(xml, "application/xml");
-    } catch (_) {}
-    try {
-      if (!doc || doc.getElementsByTagName("parsererror").length) {
-        doc = new DOMParser().parseFromString(xml, "text/html");
-      }
-    } catch (_) {}
-
-    const jsonTimedText = [];
-    const paragraphs = doc
-      ? doc.querySelectorAll
-        ? Array.from(doc.querySelectorAll("p"))
-        : Array.from(doc.getElementsByTagName("p"))
-      : [];
-
-    paragraphs.forEach((p) => {
-      const time = parseInt(p.getAttribute("t"));
-      let text = (p.textContent || "")
-        .toLowerCase()
-        .replace(/\n/gi, " ")
-        .replace(/\[.*\]/gim, "")
-        .replace(/\(.*\)/gim, "")
-        .replace(/[^\p{Letter}0-9\s]/gimu, "")
-        .trim();
-      if (!text) return;
-      text.split(" ").forEach((word) => {
-        if (!word) return;
-        jsonTimedText.push({ word, time });
-      });
-    });
-    return jsonTimedText;
+    return [];
   },
   async getCaptionTracks(url) {
     // Fetch the watch HTML to extract INNERTUBE config for the player API
@@ -439,7 +271,7 @@ window.Utilities = {
               return Utilities._appendPoTokenToTracks(tracks, poTokenTmp);
             }
           }
-        } catch (_) {}
+        } catch (e) {}
         // else: try player POST below to get poToken, then append to initialTracks
       }
     }

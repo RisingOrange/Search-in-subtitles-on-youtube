@@ -105,10 +105,12 @@ async function SearchInput(url) {
       return;
     }
 
+    const searchResults = Utilities.searchSubtitles(value, SUBTITLES);
+
     $refs.dropdown.appendChild(
       DropDownList({
         render: renderAutoCompleteItem,
-        items: Utilities.searchSubtitles(value, SUBTITLES).slice(0, 8),
+        items: searchResults.slice(0, 8),
       }),
     );
   }
