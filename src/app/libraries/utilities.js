@@ -176,7 +176,9 @@ window.Utilities = {
         }
         return words;
       }
-    } catch (e) {}
+    } catch (e) {
+      // Failed to get captions, fall through to return empty
+    }
 
     return [];
   },
@@ -271,7 +273,9 @@ window.Utilities = {
               return Utilities._appendPoTokenToTracks(tracks, poTokenTmp);
             }
           }
-        } catch (e) {}
+        } catch (e) {
+          // Failed to extract poToken from ytInitialPlayerResponse, try player POST below
+        }
         // else: try player POST below to get poToken, then append to initialTracks
       }
     }

@@ -35,6 +35,13 @@
         el.fireEvent("on" + e.eventType, e);
       }
     },
+    safePostMessage(target, message, origin) {
+      try {
+        target?.postMessage(message, origin);
+      } catch (e) {
+        // Ignore dead object errors (iframe navigated away)
+      }
+    },
   };
 
   const render = {
@@ -154,7 +161,7 @@
               credentials: "include",
             });
             const text = await res.text();
-            event.source.postMessage(
+            helpers.safePostMessage(event.source, 
               {
                 action: "HTTP.GET_TEXT.RESULT",
                 requestId: data.requestId,
@@ -165,7 +172,7 @@
               extension_url,
             );
           } catch (e) {
-            event.source.postMessage(
+            helpers.safePostMessage(event.source, 
               {
                 action: "HTTP.GET_TEXT.RESULT",
                 requestId: data.requestId,
@@ -188,7 +195,7 @@
               body,
               headers,
             );
-            event.source.postMessage(
+            helpers.safePostMessage(event.source, 
               {
                 action: "YT.POST_JSON_INJECT.RESULT",
                 requestId,
@@ -198,7 +205,7 @@
               extension_url,
             );
           } catch (e) {
-            event.source.postMessage(
+            helpers.safePostMessage(event.source, 
               {
                 action: "YT.POST_JSON_INJECT.RESULT",
                 requestId,
@@ -215,7 +222,7 @@
           const requestId = data.requestId;
           try {
             const result = await getPlayerCaptions(requestId);
-            event.source.postMessage(
+            helpers.safePostMessage(event.source, 
               {
                 action: "YT.GET_PLAYER_CAPTIONS.RESULT",
                 requestId,
@@ -226,7 +233,7 @@
               extension_url,
             );
           } catch (e) {
-            event.source.postMessage(
+            helpers.safePostMessage(event.source, 
               {
                 action: "YT.GET_PLAYER_CAPTIONS.RESULT",
                 requestId,
@@ -416,9 +423,11 @@
           return false;
         };
 
-        await waitForContent();
+        const contentLoaded = await waitForContent();
 
-        for (const seg of segments) {
+        // Only scrape if content loaded
+        if (contentLoaded) {
+          for (const seg of segments) {
           // Try to find structured elements first
           const tsEl = seg.querySelector('.segment-timestamp, [class*="timestamp"]');
           const txtEl = seg.querySelector('.segment-text, [class*="text"], yt-formatted-string');
@@ -457,6 +466,7 @@
           }
 
           if (text) transcriptCues.push({ startMs, text });
+          }
         }
       }
 
