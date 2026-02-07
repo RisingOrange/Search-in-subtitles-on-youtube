@@ -7,6 +7,9 @@
     SEARCH_BOX_VISIBILITY: false,
     YOUTUBE_RIGHT_CONTROLS: null,
     YOUTUBE_PLAYER_SEARCH_BUTTON: null,
+    TRANSCRIPT_STATE: "idle", // idle | loading | ready | error
+    TRANSCRIPT_CACHE: null,   // { videoId: string, cues: array }
+    CURRENT_VIDEO_ID: null,
   };
 
   const helpers = {
@@ -46,6 +49,10 @@
       } catch (e) {
         // Ignore dead object errors (iframe navigated away)
       }
+    },
+    getVideoId() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("v") || null;
     },
   };
 
@@ -129,6 +136,284 @@
           state.SEARCH_IFRAME.contentWindow.postMessage("FOCUS_INPUT", "*");
         }, 100);
       }
+    },
+  };
+
+  const copyTranscript = {
+    _popupObserver: null,
+    _retryTimeout: null,
+    _menuRetryTimeout: null,
+    _isVideoMenuClick: false,
+    _menuButtonListeners: new WeakSet(),
+
+    cleanup() {
+      if (this._popupObserver) {
+        this._popupObserver.disconnect();
+        this._popupObserver = null;
+      }
+      if (this._retryTimeout) {
+        clearTimeout(this._retryTimeout);
+        this._retryTimeout = null;
+      }
+      if (this._menuRetryTimeout) {
+        clearTimeout(this._menuRetryTimeout);
+        this._menuRetryTimeout = null;
+      }
+      this._isVideoMenuClick = false;
+      const toast = document.getElementById("yt-copy-transcript-toast");
+      if (toast) toast.remove();
+    },
+
+    formatCues(cues) {
+      return cues.map(cue => {
+        const totalSec = Math.floor(cue.startMs / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        const ts = h > 0
+          ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+          : `${m}:${String(s).padStart(2, "0")}`;
+        return `${ts} ${cue.text}`;
+      }).join("\n");
+    },
+
+    async writeToClipboard(text) {
+      // Try navigator.clipboard first
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (e) {
+          // Fall through to execCommand
+        }
+      }
+      // Fallback: execCommand
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0;";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        if (ok) return true;
+      } catch (e) {}
+      return false;
+    },
+
+    showToast(message, type) {
+      const existing = document.getElementById("yt-copy-transcript-toast");
+      if (existing) existing.remove();
+
+      const player = document.querySelector("#container .html5-video-player");
+      if (!player) return;
+
+      const toast = document.createElement("div");
+      toast.id = "yt-copy-transcript-toast";
+      const backgrounds = { success: "rgba(30,130,76,0.92)", error: "rgba(192,57,43,0.92)" };
+      const bg = backgrounds[type] || "rgba(50,50,50,0.92)";
+      toast.style.cssText = `position:absolute;bottom:80px;left:50%;transform:translateX(-50%);
+        background:${bg};color:#fff;padding:10px 20px;border-radius:8px;font-size:14px;
+        font-family:Roboto,Arial,sans-serif;z-index:100000;pointer-events:none;
+        opacity:0;transition:opacity 0.3s ease;white-space:nowrap;`;
+      toast.textContent = message;
+      player.appendChild(toast);
+
+      // Fade in
+      requestAnimationFrame(() => { toast.style.opacity = "1"; });
+      // Auto-dismiss
+      setTimeout(() => {
+        toast.style.opacity = "0";
+        setTimeout(() => toast.remove(), 300);
+      }, 2000);
+    },
+
+    createMenuItem() {
+      const item = document.createElement("tp-yt-paper-item");
+      item.id = "yt-copy-transcript-item";
+      item.setAttribute("role", "menuitem");
+      item.setAttribute("tabindex", "-1");
+      item.style.cssText = "display:flex;align-items:center;padding:0 16px;min-height:36px;cursor:pointer;font-family:Roboto,Arial,sans-serif;font-size:14px;";
+
+      // Icon
+      const iconWrap = document.createElement("div");
+      iconWrap.style.cssText = "width:24px;height:24px;min-width:24px;margin-right:16px;display:flex;align-items:center;justify-content:center;";
+      const ns = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(ns, "svg");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("width", "24");
+      svg.setAttribute("height", "24");
+      svg.setAttribute("fill", "currentColor");
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z");
+      svg.appendChild(path);
+      iconWrap.appendChild(svg);
+      item.appendChild(iconWrap);
+
+      // Label
+      const label = document.createElement("span");
+      label.style.cssText = "white-space:normal;word-wrap:break-word;";
+      label.textContent = "Copy transcript";
+      item.appendChild(label);
+
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // Close the menu by simulating Escape — keeps YouTube's internal state in sync
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+        this.handleCopyClick(label);
+      });
+
+      return item;
+    },
+
+    setLabelTemporarily(labelEl, text, resetDelay = 2000) {
+      labelEl.textContent = text;
+      setTimeout(() => { labelEl.textContent = "Copy transcript"; }, resetDelay);
+    },
+
+    async copyAndShowFeedback(cues, labelEl) {
+      const text = this.formatCues(cues);
+      const ok = await this.writeToClipboard(text);
+      if (ok) {
+        this.setLabelTemporarily(labelEl, "Copied!");
+        this.showToast("Transcript copied!", "success");
+      } else {
+        this.setLabelTemporarily(labelEl, "Click again to copy", 5000);
+      }
+    },
+
+    hasCachedTranscript(videoId) {
+      return state.TRANSCRIPT_STATE === "ready"
+        && state.TRANSCRIPT_CACHE
+        && state.TRANSCRIPT_CACHE.videoId === videoId
+        && state.TRANSCRIPT_CACHE.cues.length > 0;
+    },
+
+    async handleCopyClick(labelEl) {
+      const videoId = helpers.getVideoId();
+      if (!videoId) return;
+
+      if (this.hasCachedTranscript(videoId)) {
+        await this.copyAndShowFeedback(state.TRANSCRIPT_CACHE.cues, labelEl);
+        return;
+      }
+
+      if (state.TRANSCRIPT_STATE === "loading") return;
+
+      labelEl.textContent = "Loading...";
+      state.TRANSCRIPT_STATE = "loading";
+
+      try {
+        const result = await getPlayerCaptions();
+        const cues = result.transcriptCues || [];
+
+        if (helpers.getVideoId() !== videoId) {
+          state.TRANSCRIPT_STATE = "idle";
+          return;
+        }
+
+        if (cues.length === 0) {
+          state.TRANSCRIPT_STATE = "error";
+          this.setLabelTemporarily(labelEl, "No transcript", 3000);
+          this.showToast("No transcript available", "error");
+          return;
+        }
+
+        state.TRANSCRIPT_CACHE = { videoId, cues };
+        state.TRANSCRIPT_STATE = "ready";
+        await this.copyAndShowFeedback(cues, labelEl);
+      } catch (e) {
+        if (helpers.getVideoId() !== videoId) {
+          state.TRANSCRIPT_STATE = "idle";
+          return;
+        }
+        state.TRANSCRIPT_STATE = "error";
+        this.setLabelTemporarily(labelEl, "Error", 3000);
+        this.showToast("Failed to load transcript", "error");
+      }
+    },
+
+    tryInjectIntoVisiblePopup() {
+      const popupContainer = document.querySelector("ytd-popup-container");
+      if (!popupContainer) return;
+
+      const dropdown = popupContainer.querySelector("tp-yt-iron-dropdown");
+      if (!dropdown) return;
+
+      // Check if dropdown is actually visible
+      if (dropdown.style.display === "none") return;
+      if (dropdown.getAttribute("aria-hidden") === "true") return;
+
+      // Only inject if the video's three-dot button was what opened this popup
+      if (!this._isVideoMenuClick) return;
+
+      // Already injected?
+      if (dropdown.querySelector("#yt-copy-transcript-item")) return;
+
+      // Find menu items to confirm this is a menu popup (not some other dropdown)
+      const menuItems = dropdown.querySelectorAll("ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer");
+
+      if (menuItems.length === 0) return;
+
+      // Find the list container
+      const listbox = dropdown.querySelector("tp-yt-paper-listbox, #items");
+
+      if (!listbox) return;
+
+      listbox.appendChild(this.createMenuItem());
+      // YTD-MENU-POPUP-RENDERER has a tight max-height that causes scrollbars
+      const popupRenderer = dropdown.querySelector("ytd-menu-popup-renderer");
+      if (popupRenderer) {
+        popupRenderer.style.maxHeight = "none";
+        popupRenderer.style.overflowX = "hidden";
+      }
+      if (typeof dropdown.refit === "function") dropdown.refit();
+    },
+
+    setupMenuClickFlag(retries = 0) {
+      const menuBtn = document.querySelector(
+        "#actions ytd-menu-renderer > yt-button-shape#button-shape button"
+      );
+      if (!menuBtn) {
+        if (retries < 5) {
+          this._menuRetryTimeout = setTimeout(() => this.setupMenuClickFlag(retries + 1), 1000);
+        }
+        return;
+      }
+      if (this._menuButtonListeners.has(menuBtn)) return;
+      this._menuButtonListeners.add(menuBtn);
+      menuBtn.addEventListener("click", () => {
+        this._isVideoMenuClick = true;
+      });
+    },
+
+    setupPopupObserver(retries = 0) {
+      if (this._popupObserver) return;
+
+      const popupContainer = document.querySelector("ytd-popup-container");
+
+      if (!popupContainer) {
+        if (retries < 5) {
+          this._retryTimeout = setTimeout(() => this.setupPopupObserver(retries + 1), 1000);
+        }
+        return;
+      }
+
+      this._popupObserver = new MutationObserver(() => {
+        // Reset flag when dropdown closes
+        const dropdown = popupContainer.querySelector("tp-yt-iron-dropdown");
+        if (dropdown && (dropdown.style.display === "none" || dropdown.getAttribute("aria-hidden") === "true")) {
+          this._isVideoMenuClick = false;
+        }
+        this.tryInjectIntoVisiblePopup();
+      });
+      // Watch for attribute changes (style, aria-hidden) on the dropdown and subtree changes
+      this._popupObserver.observe(popupContainer, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["style", "aria-hidden"],
+      });
     },
   };
 
@@ -475,13 +760,32 @@
     return transcriptCues;
   }
 
+  function cacheTranscript(videoId, cues) {
+    if (videoId && helpers.getVideoId() === videoId) {
+      state.TRANSCRIPT_CACHE = { videoId, cues };
+      state.TRANSCRIPT_STATE = "ready";
+    }
+  }
+
   // Main function to get player captions
   async function getPlayerCaptions() {
+    const videoId = helpers.getVideoId();
+
+    // Return cached result if available
+    if (copyTranscript.hasCachedTranscript(videoId)) {
+      return { captions: [], transcriptCues: state.TRANSCRIPT_CACHE.cues };
+    }
+
     // Method 1: Try ytInitialData directly (Firefox wrappedJSObject, no CSP issues)
     try {
       const ytInitialData = getYtInitialDataDirect();
-      const transcriptCues = parseTranscriptFromYtInitialData(ytInitialData);
+      // Verify ytInitialData belongs to the current video (it can be stale after SPA navigation)
+      const dataVideoId = ytInitialData?.currentVideoEndpoint?.watchEndpoint?.videoId;
+      const transcriptCues = (dataVideoId && dataVideoId !== videoId)
+        ? []
+        : parseTranscriptFromYtInitialData(ytInitialData);
       if (transcriptCues.length > 0) {
+        cacheTranscript(videoId, transcriptCues);
         return { captions: [], transcriptCues };
       }
     } catch (e) {
@@ -493,6 +797,8 @@
 
     if (transcriptCues.length === 0) {
       console.warn('[YT-Search] No transcript found. The video may not have captions.');
+    } else {
+      cacheTranscript(videoId, transcriptCues);
     }
 
     return { captions: [], transcriptCues };
@@ -501,6 +807,15 @@
   function setup(url) {
     state.SEARCH_BOX_VISIBILITY = false;
     state.MOUSE_OVER_FRAME = false;
+
+    // Reset transcript state when video changes
+    const newVideoId = helpers.getVideoId();
+    if (newVideoId !== state.CURRENT_VIDEO_ID) {
+      state.CURRENT_VIDEO_ID = newVideoId;
+      state.TRANSCRIPT_STATE = "idle";
+      state.TRANSCRIPT_CACHE = null;
+    }
+    copyTranscript.cleanup();
 
     if (!helpers.isVideoURL(url)) {
       return;
@@ -512,6 +827,8 @@
     if (state.YOUTUBE_PLAYER) {
       addOrUpdateSearchButton();
       addOrUpdateSearchInput(url);
+      copyTranscript.setupPopupObserver();
+      copyTranscript.setupMenuClickFlag();
     } else {
       setTimeout(() => setup(window.location.href), 2000);
     }
