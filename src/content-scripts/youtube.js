@@ -12,12 +12,17 @@
   const helpers = {
     onUrlChange(callback) {
       let href = "";
-      return setInterval(function () {
+      const check = () => {
         if (href !== window.location.href) {
           href = window.location.href;
           callback(href);
         }
-      }, 1);
+      };
+      // YouTube uses History API for SPA navigation
+      window.addEventListener("yt-navigate-finish", check);
+      window.addEventListener("popstate", check);
+      // Fallback poll for edge cases
+      return setInterval(check, 500);
     },
     isVideoURL(url) {
       return url.indexOf(`https://${window.location.host}/watch`) === 0;
@@ -50,14 +55,13 @@
       iframe.setAttribute("id", state.IFRAME_ID);
       iframe.style =
         "margin-left:-150px;top:10%;left:50%;position:absolute;z-index:99999;overflow:hidden;display:none;";
-      iframe.addEventListener(
-        "mouseenter",
-        () => (state.MOUSE_OVER_FRAME = true),
-      );
-      iframe.addEventListener(
-        "mouseout",
-        () => (state.MOUSE_OVER_FRAME = false),
-      );
+      iframe.addEventListener("mouseenter", () => {
+        state.MOUSE_OVER_FRAME = true;
+      });
+      iframe.addEventListener("mouseout", () => {
+        state.MOUSE_OVER_FRAME = false;
+        render.byState();
+      });
       return iframe;
     },
     searchButton() {
@@ -155,59 +159,23 @@
         case "SEARCH.UPDATE_HEIGHT":
           state.SEARCH_IFRAME.style.height = data.payload;
           break;
-        case "HTTP.GET_TEXT": {
-          try {
-            const res = await fetch(data.payload.url, {
-              credentials: "include",
-            });
-            const text = await res.text();
-            helpers.safePostMessage(event.source, 
-              {
-                action: "HTTP.GET_TEXT.RESULT",
-                requestId: data.requestId,
-                ok: true,
-                status: res.status,
-                text,
-              },
-              extension_url,
-            );
-          } catch (e) {
-            helpers.safePostMessage(event.source, 
-              {
-                action: "HTTP.GET_TEXT.RESULT",
-                requestId: data.requestId,
-                ok: false,
-                error: e?.message || String(e),
-              },
-              extension_url,
-            );
-          }
-          break;
-        }
-
-        case "YT.POST_JSON_INJECT": {
+        case "YT.GET_CAPTION_TRACKS": {
           const requestId = data.requestId;
-          const { url, body, headers } = data.payload || {};
           try {
-            const result = await injectAndPostJson(
-              requestId,
-              url,
-              body,
-              headers,
-            );
-            helpers.safePostMessage(event.source, 
+            const tracks = await getCaptionTracks(data.payload.url);
+            helpers.safePostMessage(event.source,
               {
-                action: "YT.POST_JSON_INJECT.RESULT",
+                action: "YT.GET_CAPTION_TRACKS.RESULT",
                 requestId,
                 ok: true,
-                result,
+                tracks,
               },
               extension_url,
             );
           } catch (e) {
-            helpers.safePostMessage(event.source, 
+            helpers.safePostMessage(event.source,
               {
-                action: "YT.POST_JSON_INJECT.RESULT",
+                action: "YT.GET_CAPTION_TRACKS.RESULT",
                 requestId,
                 ok: false,
                 error: e?.message || String(e),
@@ -221,7 +189,7 @@
         case "YT.GET_PLAYER_CAPTIONS": {
           const requestId = data.requestId;
           try {
-            const result = await getPlayerCaptions(requestId);
+            const result = await getPlayerCaptions();
             helpers.safePostMessage(event.source, 
               {
                 action: "YT.GET_PLAYER_CAPTIONS.RESULT",
@@ -253,86 +221,13 @@
     },
   };
 
-  // Listen for page-injected script responses
-  function onPageMessage(event) {
-    if (event.source !== window) return;
-    const data = event.data || {};
-    if (data.source !== "YT_INJECT" || data.type !== "YT.PAGE_DATA") return;
-    const cb = pendingPageData[data.requestId];
-    if (cb) {
-      delete pendingPageData[data.requestId];
-      cb(data);
-    }
-  }
-
-  const pendingPageData = {};
-  window.addEventListener("message", onPageMessage);
-
-  function injectAndPostJson(requestId, url, body, headers) {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        delete pendingPageData[requestId];
-        reject(new Error("Injected POST timeout"));
-      }, 10000);
-
-      pendingPageData[requestId] = (msg) => {
-        clearTimeout(timeout);
-        if (msg.error) reject(new Error(msg.error));
-        else resolve({ json: msg.json || null, status: msg.status || 0 });
-      };
-
-      const script = document.createElement("script");
-      script.textContent = `(() => {
-        const reqId = '${requestId}';
-        const u = ${JSON.stringify(url)};
-        const b = ${JSON.stringify(body || {})};
-        const h = ${JSON.stringify(headers || {})};
-        const finalHeaders = Object.assign({ 'content-type': 'application/json' }, h || {});
-        fetch(u, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: finalHeaders,
-          body: typeof b === 'string' ? b : JSON.stringify(b)
-        }).then(async (r) => {
-          const status = r.status;
-          let json = null;
-          try { json = await r.json(); } catch (_) {}
-          window.postMessage({ source: 'YT_INJECT', type: 'YT.PAGE_DATA', requestId: reqId, status, json }, '*');
-        }).catch(e => {
-          window.postMessage({ source: 'YT_INJECT', type: 'YT.PAGE_DATA', requestId: reqId, error: String(e) }, '*');
-        });
-      })();`;
-      (document.head || document.documentElement).appendChild(script);
-      script.remove();
-    });
-  }
-
-  // Minimal page-context bridge: just reads ytInitialData and posts it back
-  function injectAndGetYtInitialData(requestId) {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        delete pendingPageData[requestId];
-        reject(new Error("ytInitialData timeout"));
-      }, 5000);
-
-      pendingPageData[requestId] = (msg) => {
-        clearTimeout(timeout);
-        if (msg.error) reject(new Error(msg.error));
-        else resolve(msg.data || null);
-      };
-
-      const script = document.createElement("script");
-      script.textContent = `(() => {
-        const reqId = '${requestId}';
-        try {
-          window.postMessage({ source: 'YT_INJECT', type: 'YT.PAGE_DATA', requestId: reqId, data: window.ytInitialData || null }, '*');
-        } catch(e) {
-          window.postMessage({ source: 'YT_INJECT', type: 'YT.PAGE_DATA', requestId: reqId, error: String(e) }, '*');
-        }
-      })();`;
-      (document.head || document.documentElement).appendChild(script);
-      script.remove();
-    });
+  // Read ytInitialData via wrappedJSObject (Firefox) without inline script injection
+  function getYtInitialDataDirect() {
+    try {
+      const raw = window.wrappedJSObject?.ytInitialData;
+      if (raw) return JSON.parse(JSON.stringify(raw));
+    } catch (e) {}
+    return null;
   }
 
   // Parse transcript cues from ytInitialData
@@ -373,6 +268,99 @@
       }
     }
     return dedupedCues;
+  }
+
+  // Extract JSON object that follows a token in a string
+  function extractJsonAfter(haystack, token) {
+    const i = haystack.indexOf(token);
+    if (i === -1) return null;
+    let start = haystack.indexOf("{", i);
+    if (start === -1) return null;
+    let depth = 0;
+    let cur = start;
+    while (cur < haystack.length) {
+      const ch = haystack[cur];
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      cur++;
+      if (depth === 0) break;
+    }
+    try {
+      return JSON.parse(haystack.substring(start, cur));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function extractJsonStringValue(haystack, token) {
+    const i = haystack.indexOf(token);
+    if (i === -1) return null;
+    let cur = i + token.length;
+    let out = "";
+    while (cur < haystack.length) {
+      const ch = haystack[cur++];
+      if (ch === "\\") {
+        out += ch;
+        if (cur < haystack.length) out += haystack[cur++];
+        continue;
+      }
+      if (ch === '"') break;
+      out += ch;
+    }
+    try {
+      return JSON.parse('"' + out.replace(/"/g, '\\"') + '"');
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function extractPlayerResponse(html) {
+    const prObj = extractJsonAfter(html, "ytInitialPlayerResponse");
+    if (prObj) return prObj;
+    const jsonStr = extractJsonStringValue(html, '"PLAYER_RESPONSE":"');
+    if (jsonStr) {
+      try {
+        return JSON.parse(jsonStr);
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  // Fetch YouTube page HTML and extract caption tracks
+  async function getCaptionTracks(url) {
+    const res = await fetch(url, { credentials: "include" });
+    const html = await res.text();
+
+    const initialPR = extractPlayerResponse(html);
+    if (initialPR) {
+      const tracks =
+        initialPR?.captions?.playerCaptionsTracklistRenderer?.captionTracks ||
+        [];
+      if (tracks.length > 0) return tracks;
+    }
+
+    // Legacy fallback: scrape captionTracks JSON from HTML
+    if (html.indexOf("captionTracks") === -1) {
+      return [];
+    }
+
+    try {
+      let startIdx = html.indexOf("captionTracks");
+      startIdx = html.indexOf("[", startIdx);
+      let curIdx = startIdx + 1;
+      let depth = 1;
+      while (depth != 0) {
+        let curChar = html[curIdx];
+        if (curChar == "[") depth += 1;
+        else if (curChar == "]") depth -= 1;
+        curIdx += 1;
+      }
+      return JSON.parse(html.substring(startIdx, curIdx));
+    } catch (e) {
+      return [];
+    }
   }
 
   // Helper to wait for selector with polling
@@ -428,44 +416,44 @@
         // Only scrape if content loaded
         if (contentLoaded) {
           for (const seg of segments) {
-          // Try to find structured elements first
-          const tsEl = seg.querySelector('.segment-timestamp, [class*="timestamp"]');
-          const txtEl = seg.querySelector('.segment-text, [class*="text"], yt-formatted-string');
+            // Try to find structured elements first
+            const tsEl = seg.querySelector('.segment-timestamp, [class*="timestamp"]');
+            const txtEl = seg.querySelector('.segment-text, [class*="text"], yt-formatted-string');
 
-          let timeText = '';
-          let text = '';
+            let timeText = '';
+            let text = '';
 
-          if (tsEl && txtEl) {
-            timeText = tsEl.innerText.trim();
-            text = txtEl.innerText.trim();
-          } else {
-            // Fallback: parse innerText
-            const fullText = seg.innerText.trim();
-            const lines = fullText.split(/[\n\r]+/).filter(l => l.trim());
+            if (tsEl && txtEl) {
+              timeText = tsEl.innerText.trim();
+              text = txtEl.innerText.trim();
+            } else {
+              // Fallback: parse innerText
+              const fullText = seg.innerText.trim();
+              const lines = fullText.split(/[\n\r]+/).filter(l => l.trim());
 
-            if (lines.length >= 2) {
-              timeText = lines[0].trim();
-              text = lines.slice(1).join(' ').trim();
-            } else if (lines.length === 1) {
-              const match = lines[0].match(/^(\d+:\d+(?::\d+)?)\s*(.*)/);
-              if (match) {
-                timeText = match[1];
-                text = match[2];
-              } else {
-                text = lines[0];
+              if (lines.length >= 2) {
+                timeText = lines[0].trim();
+                text = lines.slice(1).join(' ').trim();
+              } else if (lines.length === 1) {
+                const match = lines[0].match(/^(\d+:\d+(?::\d+)?)\s*(.*)/);
+                if (match) {
+                  timeText = match[1];
+                  text = match[2];
+                } else {
+                  text = lines[0];
+                }
               }
             }
-          }
 
-          // Parse timestamp
-          let startMs = 0;
-          if (timeText) {
-            const parts = timeText.split(':').map(p => parseInt(p) || 0);
-            if (parts.length === 2) startMs = (parts[0] * 60 + parts[1]) * 1000;
-            else if (parts.length === 3) startMs = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
-          }
+            // Parse timestamp
+            let startMs = 0;
+            if (timeText) {
+              const parts = timeText.split(':').map(p => parseInt(p) || 0);
+              if (parts.length === 2) startMs = (parts[0] * 60 + parts[1]) * 1000;
+              else if (parts.length === 3) startMs = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
+            }
 
-          if (text) transcriptCues.push({ startMs, text });
+            if (text) transcriptCues.push({ startMs, text });
           }
         }
       }
@@ -488,16 +476,16 @@
   }
 
   // Main function to get player captions
-  async function getPlayerCaptions(requestId) {
-    // Method 1: Try ytInitialData first (requires page-context bridge)
+  async function getPlayerCaptions() {
+    // Method 1: Try ytInitialData directly (Firefox wrappedJSObject, no CSP issues)
     try {
-      const ytInitialData = await injectAndGetYtInitialData(requestId);
+      const ytInitialData = getYtInitialDataDirect();
       const transcriptCues = parseTranscriptFromYtInitialData(ytInitialData);
       if (transcriptCues.length > 0) {
         return { captions: [], transcriptCues };
       }
     } catch (e) {
-      // Continue to DOM scraping
+      console.warn('[YT-Search] wrappedJSObject error:', e.message);
     }
 
     // Method 2: Scrape from transcript panel DOM (content script can do this directly)
@@ -561,7 +549,6 @@
   }
 
   helpers.onUrlChange(setup);
-  setInterval(render.byState, 10);
   window.addEventListener("message", logic.handleMessage);
 
   chrome.runtime.onMessage.addListener((data) => {
