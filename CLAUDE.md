@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Firefox/Chrome browser extension (Manifest V2) that lets users search YouTube video subtitles and jump to the matching timestamp. Available on [Firefox Addons](https://addons.mozilla.org/en-US/firefox/addon/search-in-subtitles-on-youtube/).
+A Firefox/Chrome browser extension (Manifest V2) that lets users search YouTube video subtitles and jump to the matching timestamp, and copy full transcripts to clipboard. Available on [Firefox Addons](https://addons.mozilla.org/en-US/firefox/addon/search-in-subtitles-on-youtube/).
 
 ## Development Commands
 
@@ -24,7 +24,7 @@ No build step, bundler, or test framework — all source is plain JavaScript loa
 
 ### Two execution contexts communicate via `postMessage`:
 
-1. **Content Script** (`src/content-scripts/youtube.js`) — injected into youtube.com pages. Manages the search iframe lifecycle, adds a search button to the YouTube player controls, and handles all YouTube data access (fetching page HTML, parsing caption tracks, reading `ytInitialData` via Firefox's `wrappedJSObject`, DOM scraping of the transcript panel). Handles `SKIP`, `SEARCH.CLOSE`, `SEARCH.READY`, `SEARCH.UPDATE_HEIGHT`, `YT.GET_CAPTION_TRACKS`, and `YT.GET_PLAYER_CAPTIONS` message actions.
+1. **Content Script** (`src/content-scripts/youtube.js`) — injected into youtube.com pages. Manages the search iframe lifecycle, adds a search button to the YouTube player controls, injects a "Copy transcript" item into YouTube's three-dot menu, and handles all YouTube data access (fetching page HTML, parsing caption tracks, reading `ytInitialData` via Firefox's `wrappedJSObject`, DOM scraping of the transcript panel). Handles `SKIP`, `SEARCH.CLOSE`, `SEARCH.READY`, `SEARCH.UPDATE_HEIGHT`, `YT.GET_CAPTION_TRACKS`, and `YT.GET_PLAYER_CAPTIONS` message actions.
 
 2. **Extension Iframe** (`src/app/`) — the search UI loaded inside an iframe overlaying the YouTube player. Uses a custom minimal component library (`src/app/libraries/component.js`) that creates DOM elements via global functions (`div()`, `input()`, `ul()`, etc.) and a `$refs` system for element references. `src/app/libraries/utilities.js` contains subtitle searching, text cleaning, and a `_bridgeCall` helper for messaging the content script.
 
@@ -41,6 +41,19 @@ No build step, bundler, or test framework — all source is plain JavaScript loa
 2. **Fallback**: Open YouTube's transcript panel, scrape DOM segments, close panel
 
 When DOM-scraping the transcript panel, use `opacity: 0` (not `visibility: hidden`) — YouTube doesn't render `innerText` for hidden elements. All DOM selectors are structural (component names, IDs) to be language-agnostic.
+
+After SPA navigation, `window.ytInitialData` may be stale (containing the previous video's data). Always verify `ytInitialData.currentVideoEndpoint.watchEndpoint.videoId` matches the current URL before using transcript cues from it.
+
+### Copy Transcript Feature
+
+The `copyTranscript` object in youtube.js injects a "Copy transcript" menu item into YouTube's three-dot ("More actions") menu below the video. Key patterns:
+
+- **Menu injection**: A persistent `MutationObserver` on `ytd-popup-container` watches for `style`/`aria-hidden` attribute changes to detect when a dropdown becomes visible. A click listener on the video's three-dot button (`#actions ytd-menu-renderer > yt-button-shape#button-shape button`) sets a flag to scope injection to only that menu.
+- **Dropdown sizing**: `ytd-menu-popup-renderer` has a tight `max-height` — set it to `"none"` and `overflowX` to `"hidden"` after injection, then call `dropdown.refit()`.
+- **Closing the menu**: Dispatch `new KeyboardEvent("keydown", { key: "Escape" })` on `document`. Do not use `dropdown.close()` or `dropdown.style.display = "none"` — both break YouTube's internal toggle state.
+- **Menu item styling**: Use `tp-yt-paper-item` element, `<span>` for labels (not `<yt-formatted-string>`), `white-space:normal` for text wrapping, `min-width:24px` on icon wrapper.
+- **Transcript cache**: Cues are cached by video ID. Cache is invalidated on video ID change in `setup()`. The `getPlayerCaptions()` function populates the cache, shared by both the search iframe and the copy feature.
+- **Clipboard fallback**: `navigator.clipboard.writeText()` → `document.execCommand('copy')` → "Click again to copy" (re-gesture).
 
 ### Options UI
 
