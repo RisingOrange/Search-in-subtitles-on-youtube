@@ -4,7 +4,7 @@ async function App() {
   if (!url) return;
   if ((await Utilities.getCaptionTracks(url)).length == 0) return;
 
-  var searchInput = SearchInput(url);
+  var searchInput = SearchInput();
 
   Utilities.postMessage({ action: "SEARCH.READY" });
 

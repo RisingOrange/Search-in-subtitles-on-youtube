@@ -24,7 +24,7 @@ No build step, bundler, or test framework — all source is plain JavaScript loa
 
 ### Two execution contexts communicate via `postMessage`:
 
-1. **Content Script** (`src/content-scripts/youtube.js`) — injected into youtube.com pages. Manages the search iframe lifecycle, adds a search button to the YouTube player controls, injects a "Copy transcript" item into YouTube's three-dot menu, and handles all YouTube data access (fetching page HTML, parsing caption tracks, reading `ytInitialData` via Firefox's `wrappedJSObject`, DOM scraping of the transcript panel). Handles `SKIP`, `SEARCH.CLOSE`, `SEARCH.READY`, `SEARCH.UPDATE_HEIGHT`, `YT.GET_CAPTION_TRACKS`, and `YT.GET_PLAYER_CAPTIONS` message actions.
+1. **Content Script** (`src/content-scripts/youtube.js`) — injected into youtube.com pages. Manages the search iframe lifecycle, adds a search button to the YouTube player controls, injects a "Copy transcript" item into YouTube's three-dot menu, and handles all YouTube data access (fetching page HTML, parsing caption tracks, DOM scraping of the transcript panel). Handles `SKIP`, `SEARCH.CLOSE`, `SEARCH.READY`, `SEARCH.UPDATE_HEIGHT`, `YT.GET_CAPTION_TRACKS`, and `YT.GET_PLAYER_CAPTIONS` message actions.
 
 2. **Extension Iframe** (`src/app/`) — the search UI loaded inside an iframe overlaying the YouTube player. Uses a custom minimal component library (`src/app/libraries/component.js`) that creates DOM elements via global functions (`div()`, `input()`, `ul()`, etc.) and a `$refs` system for element references. `src/app/libraries/utilities.js` contains subtitle searching, text cleaning, and a `_bridgeCall` helper for messaging the content script.
 
@@ -34,15 +34,9 @@ No build step, bundler, or test framework — all source is plain JavaScript loa
 
 ### Subtitle Retrieval Flow
 
-**Step 1 — Caption track discovery** (`getCaptionTracks` in youtube.js): Fetches YouTube page HTML and parses `ytInitialPlayerResponse` to find available subtitle languages/tracks.
+**Step 1 — Caption track discovery** (`getCaptionTracks` in youtube.js): Fetches YouTube page HTML and parses `ytInitialPlayerResponse` to find available subtitle languages/tracks. This is used by `app.js` to gate on captions existing before showing the search UI.
 
-**Step 2 — Subtitle text retrieval** (`getPlayerCaptions` in youtube.js): Two methods, tried in order:
-1. **Primary**: Read `window.ytInitialData` via Firefox's `wrappedJSObject` API and extract transcript cues
-2. **Fallback**: Open YouTube's transcript panel, scrape DOM segments, close panel
-
-When DOM-scraping the transcript panel, use `opacity: 0` (not `visibility: hidden`) — YouTube doesn't render `innerText` for hidden elements. All DOM selectors are structural (component names, IDs) to be language-agnostic.
-
-After SPA navigation, `window.ytInitialData` may be stale (containing the previous video's data). Always verify `ytInitialData.currentVideoEndpoint.watchEndpoint.videoId` matches the current URL before using transcript cues from it.
+**Step 2 — Subtitle text retrieval** (`getPlayerCaptions` in youtube.js): Opens YouTube's transcript panel (hidden with `opacity: 0`), scrapes DOM segments, then closes the panel. YouTube doesn't render `innerText` for `visibility: hidden` elements, so `opacity: 0` is used instead. All DOM selectors are structural (component names, IDs) to be language-agnostic. There is no language picker — the default transcript language provided by YouTube is used.
 
 ### Copy Transcript Feature
 

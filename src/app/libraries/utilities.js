@@ -109,11 +109,7 @@ window.Utilities = {
       return [];
     }
   },
-  async getSubtitles(caption_track) {
-    if (!caption_track) {
-      return [];
-    }
-
+  async getSubtitles() {
     try {
       const data = await Utilities._bridgeCall("YT.GET_PLAYER_CAPTIONS", {}, 15000);
       const transcriptCues = data.transcriptCues || [];

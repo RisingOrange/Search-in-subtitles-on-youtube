@@ -506,55 +506,6 @@
     },
   };
 
-  // Read ytInitialData via wrappedJSObject (Firefox) without inline script injection
-  function getYtInitialDataDirect() {
-    try {
-      const raw = window.wrappedJSObject?.ytInitialData;
-      if (raw) return JSON.parse(JSON.stringify(raw));
-    } catch (e) {}
-    return null;
-  }
-
-  // Parse transcript cues from ytInitialData
-  function parseTranscriptFromYtInitialData(ytInitialData) {
-    const transcriptCues = [];
-    if (!ytInitialData) return transcriptCues;
-
-    const findTranscript = (obj) => {
-      if (!obj || typeof obj !== 'object') return;
-      if (obj.transcriptSearchPanelRenderer) {
-        const sr = obj.transcriptSearchPanelRenderer;
-        if (sr.body && sr.body.transcriptSegmentListRenderer) {
-          const segments = sr.body.transcriptSegmentListRenderer.initialSegments || [];
-          for (const seg of segments) {
-            if (seg.transcriptSegmentRenderer) {
-              const r = seg.transcriptSegmentRenderer;
-              const startMs = parseInt(r.startMs || '0');
-              const text = r.snippet?.runs?.map(run => run.text).join('') || '';
-              if (text) transcriptCues.push({ startMs, text });
-            }
-          }
-        }
-      }
-      for (const k in obj) {
-        if (typeof obj[k] === 'object') findTranscript(obj[k]);
-      }
-    };
-    findTranscript(ytInitialData);
-
-    // Deduplicate cues (ytInitialData sometimes contains the transcript twice)
-    const seen = new Set();
-    const dedupedCues = [];
-    for (const cue of transcriptCues) {
-      const key = `${cue.startMs}:${cue.text}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        dedupedCues.push(cue);
-      }
-    }
-    return dedupedCues;
-  }
-
   // Extract JSON object that follows a token in a string
   function extractJsonAfter(haystack, token) {
     const i = haystack.indexOf(token);
@@ -776,23 +727,7 @@
       return { captions: [], transcriptCues: state.TRANSCRIPT_CACHE.cues };
     }
 
-    // Method 1: Try ytInitialData directly (Firefox wrappedJSObject, no CSP issues)
-    try {
-      const ytInitialData = getYtInitialDataDirect();
-      // Verify ytInitialData belongs to the current video (it can be stale after SPA navigation)
-      const dataVideoId = ytInitialData?.currentVideoEndpoint?.watchEndpoint?.videoId;
-      const transcriptCues = (dataVideoId && dataVideoId !== videoId)
-        ? []
-        : parseTranscriptFromYtInitialData(ytInitialData);
-      if (transcriptCues.length > 0) {
-        cacheTranscript(videoId, transcriptCues);
-        return { captions: [], transcriptCues };
-      }
-    } catch (e) {
-      console.warn('[YT-Search] wrappedJSObject error:', e.message);
-    }
-
-    // Method 2: Scrape from transcript panel DOM (content script can do this directly)
+    // Scrape from transcript panel DOM (content script can do this directly)
     const transcriptCues = await scrapeTranscriptFromDOM();
 
     if (transcriptCues.length === 0) {

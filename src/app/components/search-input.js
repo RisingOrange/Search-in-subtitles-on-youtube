@@ -1,15 +1,6 @@
-async function SearchInput(url) {
+async function SearchInput() {
   let SUGGESTIONS_INDEX = -1;
-
-  CAPTION_TRACKS = await Utilities.getCaptionTracks(url);
-  CUR_CAPTION_TRACK = null;
-  SUBTITLES = [];
-
-  r = await setTrackByName("English");
-  if (!r) r = await setTrackByName("English (United Kingdom)");
-  if (!r) r = await setTrackByName("English (United States)");
-  if (!r) r = await setTrackByName("English (auto-generated)");
-  if (!r) await setTrackByIdx(0);
+  const SUBTITLES = await Utilities.getSubtitles();
 
   function renderAutoCompleteItem(item) {
     return li({ onClick: () => handleAutoCompleteItemClick(item) }, [
@@ -115,37 +106,11 @@ async function SearchInput(url) {
     );
   }
 
-  function handleTrackOptionChanged(event) {
-    setTrackByName(event.target.value);
-  }
-
-  async function setTrackByName(name) {
-    for (let i = 0; i < CAPTION_TRACKS.length; i++) {
-      if (CAPTION_TRACKS[i].name.simpleText == name) {
-        setTrackByIdx(i);
-        return true;
-      }
-    }
-    return false;
-  }
-
-  async function setTrackByIdx(subtitleIdx) {
-    CUR_CAPTION_TRACK = CAPTION_TRACKS[subtitleIdx];
-    SUBTITLES = await Utilities.getSubtitles(CUR_CAPTION_TRACK);
-  }
-
   function handleCloseButtonClicked() {
     Utilities.postMessage({ action: "SEARCH.CLOSE" });
   }
 
   return [
-    SubtitleSelect({
-      items: CAPTION_TRACKS.map((x) => x.name.simpleText),
-      onChange: handleTrackOptionChanged,
-      className: "subitle-select",
-      ref: "subtitleSelect",
-      value: CUR_CAPTION_TRACK.name.simpleText,
-    }),
     div({
       class: "relative",
       children: [
