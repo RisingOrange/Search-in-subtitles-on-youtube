@@ -89,6 +89,14 @@ async function launchFirefoxWithExtension(extensionPath) {
   options.addArguments("-width=1280");
   options.addArguments("-height=900");
 
+  // Reduce bot detection: hide navigator.webdriver flag
+  options.setPreference("dom.webdriver.enabled", false);
+  // Use a realistic desktop user-agent so YouTube doesn't flag headless sessions
+  options.setPreference(
+    "general.useragent.override",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0"
+  );
+
   // Allow overriding Firefox binary path via env var (useful for local dev)
   if (process.env.FIREFOX_BIN) {
     options.setBinary(process.env.FIREFOX_BIN);
@@ -117,7 +125,36 @@ async function launchFirefoxWithExtension(extensionPath) {
 }
 
 /**
+ * Check if YouTube is showing a bot challenge / "Sign in to confirm" page.
+ * Returns true if a bot challenge was detected.
+ */
+async function detectBotChallenge(driver) {
+  try {
+    const result = await driver.executeScript(`
+      const body = document.body ? document.body.innerText : '';
+      return {
+        hasBotText: /sign in to confirm.*(not a bot|you('re| are) not a robot)/i.test(body),
+        hasChallenge: !!document.querySelector('iframe[src*="google.com/recaptcha"], iframe[src*="challenges.cloudflare.com"], #captcha-form'),
+        title: document.title,
+        hasPlayer: !!document.querySelector('#movie_player'),
+      };
+    `);
+    if (result.hasBotText || result.hasChallenge) {
+      return true;
+    }
+    // If page loaded but no player and title hints at a challenge
+    if (!result.hasPlayer && /confirm|verify|bot|captcha/i.test(result.title)) {
+      return true;
+    }
+  } catch {
+    // Script execution failed — page may still be loading
+  }
+  return false;
+}
+
+/**
  * Navigate to a YouTube video and handle interstitials.
+ * Sets driver._botChallengeDetected = true if YouTube shows a bot gate.
  */
 async function openYouTubeVideo(driver, url) {
   // Set consent cookie before navigating to suppress GDPR dialogs
@@ -141,8 +178,25 @@ async function openYouTubeVideo(driver, url) {
   // Handle consent redirects (consent.youtube.com)
   await handleConsentInterstitial(driver);
 
+  // Check for bot challenge before waiting for player
+  if (await detectBotChallenge(driver)) {
+    console.warn("openYouTubeVideo: YouTube bot challenge detected — tests will be skipped");
+    driver._botChallengeDetected = true;
+    return;
+  }
+
   // Wait for the video player to be present
-  await waitForElement(driver, "#movie_player", 20000);
+  try {
+    await waitForElement(driver, "#movie_player", 20000);
+  } catch {
+    // Player didn't appear — check if it's a late bot challenge
+    if (await detectBotChallenge(driver)) {
+      console.warn("openYouTubeVideo: YouTube bot challenge detected (after wait) — tests will be skipped");
+      driver._botChallengeDetected = true;
+      return;
+    }
+    throw new Error("openYouTubeVideo: #movie_player not found and no bot challenge detected");
+  }
 
   // Handle ads
   const videoReady = await ensureNoAdPlaying(driver);
@@ -355,6 +409,7 @@ module.exports = {
   buildExtension,
   launchFirefoxWithExtension,
   openYouTubeVideo,
+  detectBotChallenge,
   ensureNoAdPlaying,
   waitForElement,
   waitForVisible,

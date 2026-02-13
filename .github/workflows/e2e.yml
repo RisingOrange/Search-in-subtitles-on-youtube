@@ -32,13 +32,15 @@ jobs:
       - name: Run E2E tests
         run: npm test
 
-      # Upload screenshots and diagnostics on failure
+      # Upload screenshots and diagnostics on failure or when tests were skipped
+      # (e.g. YouTube bot challenge detection saves diagnostics even on skip)
       - name: Upload failure diagnostics
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-failure-diagnostics
           path: tests/e2e/screenshots/
+          if-no-files-found: ignore
           retention-days: 14
 
       # On scheduled run failure, create or comment on a GitHub issue

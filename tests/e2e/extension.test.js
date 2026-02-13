@@ -18,11 +18,22 @@ const TEST_VIDEO = TEST_VIDEOS[0];
 
 describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
   let driver;
+  let botBlocked = false;
+
+  function skipIfBotBlocked(ctx) {
+    if (botBlocked) {
+      ctx.skip("YouTube bot challenge detected — skipping (not an extension bug)");
+    }
+  }
 
   before(async () => {
     const extensionPath = buildExtension();
     driver = await launchFirefoxWithExtension(extensionPath);
     await openYouTubeVideo(driver, TEST_VIDEO.url);
+    if (driver._botChallengeDetected) {
+      botBlocked = true;
+      await saveDiagnostics(driver, "00-bot-challenge-primary");
+    }
   });
 
   after(async () => {
@@ -31,7 +42,8 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     }
   });
 
-  it("should inject the search button into YouTube player controls", async () => {
+  it("should inject the search button into YouTube player controls", async (t) => {
+    skipIfBotBlocked(t);
     try {
       const searchBtn = await waitForElement(driver, "#subtitle-search-button", 20000);
       assert.ok(searchBtn, "Search button element should exist");
@@ -55,7 +67,8 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     }
   });
 
-  it("should open the search iframe when the search button is clicked", async () => {
+  it("should open the search iframe when the search button is clicked", async (t) => {
+    skipIfBotBlocked(t);
     try {
       const searchBtn = await waitForElement(driver, "#subtitle-search-button", 10000);
       await searchBtn.click();
@@ -80,7 +93,8 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     }
   });
 
-  it("should return search results when typing a known subtitle word", async () => {
+  it("should return search results when typing a known subtitle word", async (t) => {
+    skipIfBotBlocked(t);
     try {
       // Switch into the extension iframe
       await switchToExtensionIframe(driver);
@@ -125,7 +139,8 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     }
   });
 
-  it("should seek the video when clicking a search result", async () => {
+  it("should seek the video when clicking a search result", async (t) => {
+    skipIfBotBlocked(t);
     try {
       // Record current video time
       const timeBefore = await driver.executeScript(
@@ -180,7 +195,8 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     }
   });
 
-  it("should inject 'Copy transcript' into the three-dot menu", async () => {
+  it("should inject 'Copy transcript' into the three-dot menu", async (t) => {
+    skipIfBotBlocked(t);
     try {
       // Make sure we're on the main page
       await switchToMainPage(driver);
@@ -238,12 +254,23 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
 // to verify the extension works across different videos
 describe("Fallback video validation", { timeout: 120000 }, () => {
   let driver;
+  let botBlocked = false;
   const FALLBACK_VIDEO = TEST_VIDEOS[1];
+
+  function skipIfBotBlocked(ctx) {
+    if (botBlocked) {
+      ctx.skip("YouTube bot challenge detected — skipping (not an extension bug)");
+    }
+  }
 
   before(async () => {
     const extensionPath = buildExtension();
     driver = await launchFirefoxWithExtension(extensionPath);
     await openYouTubeVideo(driver, FALLBACK_VIDEO.url);
+    if (driver._botChallengeDetected) {
+      botBlocked = true;
+      await saveDiagnostics(driver, "00-bot-challenge-fallback");
+    }
   });
 
   after(async () => {
@@ -252,7 +279,8 @@ describe("Fallback video validation", { timeout: 120000 }, () => {
     }
   });
 
-  it("should inject search button on fallback video", async () => {
+  it("should inject search button on fallback video", async (t) => {
+    skipIfBotBlocked(t);
     try {
       const searchBtn = await waitForElement(driver, "#subtitle-search-button", 20000);
       assert.ok(searchBtn, "Search button should exist on fallback video");
@@ -262,7 +290,8 @@ describe("Fallback video validation", { timeout: 120000 }, () => {
     }
   });
 
-  it("should find search results on fallback video", async () => {
+  it("should find search results on fallback video", async (t) => {
+    skipIfBotBlocked(t);
     try {
       // Click search button to open iframe
       const searchBtn = await waitForElement(driver, "#subtitle-search-button", 10000);
