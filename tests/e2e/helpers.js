@@ -1,6 +1,7 @@
 const { execSync } = require("child_process");
 const { Builder, By, until } = require("selenium-webdriver");
 const firefox = require("selenium-webdriver/firefox");
+const geckodriver = require("geckodriver");
 const fs = require("fs");
 const path = require("path");
 
@@ -60,6 +61,7 @@ function buildExtension() {
  */
 async function launchFirefoxWithExtension(extensionPath) {
   const options = new firefox.Options();
+  const service = new firefox.ServiceBuilder(geckodriver.path);
   options.addArguments("-headless");
   // Wider viewport so YouTube renders full player controls
   options.addArguments("-width=1280");
@@ -72,6 +74,7 @@ async function launchFirefoxWithExtension(extensionPath) {
 
   const driver = await new Builder()
     .forBrowser("firefox")
+    .setFirefoxService(service)
     .setFirefoxOptions(options)
     .build();
 
@@ -170,35 +173,54 @@ async function handleConsentInterstitial(driver) {
 
 /**
  * Wait for ads to finish, skip if possible.
- * Ensures the real video is present and seekable before returning.
+ * Ensures a playable non-ad video is available before returning.
  */
 async function ensureNoAdPlaying(driver) {
-
-  const maxWait = 60000; // 60s max for ads
+  const maxWait = 90000; // 90s max for long prerolls/non-skippable ads
   const start = Date.now();
 
   while (Date.now() - start < maxWait) {
-    const isAdShowing = await driver.executeScript(`
+    const state = await driver.executeScript(`
       const player = document.querySelector('#movie_player');
-      return player && player.classList.contains('ad-showing');
+      const video = document.querySelector('video');
+      return {
+        adShowing: !!(player && player.classList.contains('ad-showing')),
+        hasVideo: !!video,
+        readyState: video ? video.readyState : 0,
+        duration: video ? video.duration : NaN,
+      };
     `);
 
-    if (!isAdShowing) break;
+    if (!state.adShowing) {
+      // Some CI runs stay paused in headless mode unless playback is nudged.
+      await driver.executeScript(`
+        const video = document.querySelector('video');
+        if (!video) return;
+        video.muted = true;
+        video.play().catch(() => {});
+      `);
 
-    // Try to click skip button
+      // Metadata/data is enough for subtitle search; full playback can start later.
+      const isUsable = state.hasVideo && state.readyState >= 1 && !isNaN(state.duration) && state.duration > 0;
+      if (isUsable) {
+        return;
+      }
+    }
+
+    // Try to click skip button if ads are showing
     const skipSelectors = [
       ".ytp-skip-ad-button",
       ".ytp-ad-skip-button",
       ".ytp-ad-skip-button-modern",
       "button.ytp-ad-skip-button-modern",
-      '.ytp-ad-skip-button-slot button',
+      ".ytp-ad-skip-button-slot button",
     ];
+
     for (const selector of skipSelectors) {
       try {
         const skipBtn = await driver.findElement(By.css(selector));
         if (await skipBtn.isDisplayed()) {
           await skipBtn.click();
-          await driver.sleep(1000);
           break;
         }
       } catch {
@@ -209,13 +231,7 @@ async function ensureNoAdPlaying(driver) {
     await driver.sleep(1000);
   }
 
-  // Wait for real video to be seekable
-  await driver.wait(async () => {
-    return driver.executeScript(`
-      const video = document.querySelector('video');
-      return video && video.readyState >= 2 && !isNaN(video.duration) && video.duration > 0;
-    `);
-  }, 15000, "Timed out waiting for video to become seekable after ads");
+  throw new Error("Timed out waiting for ads to finish or for video metadata to load");
 }
 
 /**
