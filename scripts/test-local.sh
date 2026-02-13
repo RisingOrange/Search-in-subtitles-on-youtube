@@ -32,7 +32,7 @@ done
 if [ -n "${FIREFOX_BIN:-}" ]; then
   : # user already set it
 elif command -v firefox &>/dev/null; then
-  export FIREFOX_BIN="firefox"
+  export FIREFOX_BIN="$(readlink -f "$(command -v firefox)")"
 elif command -v firefox-esr &>/dev/null; then
   export FIREFOX_BIN="firefox-esr"
 elif [ -d "/Applications/Firefox.app" ]; then

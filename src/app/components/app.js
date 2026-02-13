@@ -2,7 +2,12 @@ async function App() {
   const url = Utilities.getYouTubeURL();
 
   if (!url) return;
-  if ((await Utilities.getCaptionTracks(url)).length == 0) return;
+  try {
+    const tracks = await Utilities.getCaptionTracks(url);
+    if (tracks.length == 0) return;
+  } catch (e) {
+    return;
+  }
 
   var searchInput = SearchInput();
 

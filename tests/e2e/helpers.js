@@ -61,11 +61,6 @@ function buildExtension() {
 }
 
 /**
- * Launch Firefox with the extension installed.
- * Returns { driver, extensionId }.
- */
-
-/**
  * Download AdBlocker Ultimate XPI and return local file path.
  * Best-effort: throws only if download command fails.
  */
@@ -111,6 +106,9 @@ async function launchFirefoxWithExtension(extensionPath) {
     .setFirefoxOptions(options)
     .build();
 
+  // Remember the initial tab handle before installing addons
+  const originalTab = await driver.getWindowHandle();
+
   // Install AdBlocker Ultimate first to reduce YouTube preroll ad flakiness.
   if (process.env.E2E_ENABLE_ADBLOCKER !== "0") {
     try {
@@ -123,6 +121,16 @@ async function launchFirefoxWithExtension(extensionPath) {
 
   // Install extension as temporary addon (works without signing)
   await driver.installAddon(extensionPath, true);
+
+  // Close any tabs opened by addon installations (e.g. AdBlocker Ultimate thank-you page)
+  const allTabs = await driver.getAllWindowHandles();
+  for (const tab of allTabs) {
+    if (tab !== originalTab) {
+      await driver.switchTo().window(tab);
+      await driver.close();
+    }
+  }
+  await driver.switchTo().window(originalTab);
 
   return driver;
 }
@@ -244,7 +252,6 @@ async function handleConsentInterstitial(driver) {
   // If redirected to consent domain, find and click accept
   if (currentUrl.includes("consent.youtube.com") || currentUrl.includes("consent.google.com")) {
     try {
-    
       // Try various accept button selectors
       const acceptSelectors = [
         'button[aria-label*="Accept"]',
@@ -276,7 +283,6 @@ async function handleConsentInterstitial(driver) {
 
   // Check for in-page consent dialog
   try {
-  
     const dialog = await driver.findElement(By.css("tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox"));
     if (await dialog.isDisplayed()) {
       const acceptBtn = await dialog.findElement(
@@ -373,7 +379,6 @@ async function ensureNoAdPlaying(driver) {
  * Returns the element.
  */
 async function waitForElement(driver, cssSelector, timeoutMs = 10000) {
-
   return driver.wait(
     until.elementLocated(By.css(cssSelector)),
     timeoutMs,
@@ -386,7 +391,6 @@ async function waitForElement(driver, cssSelector, timeoutMs = 10000) {
  * Returns the element.
  */
 async function waitForVisible(driver, cssSelector, timeoutMs = 10000) {
-
   const el = await waitForElement(driver, cssSelector, timeoutMs);
   await driver.wait(
     until.elementIsVisible(el),
@@ -433,7 +437,29 @@ async function saveDiagnostics(driver, testName) {
     const currentUrl = await driver.getCurrentUrl();
     const readyState = await driver.executeScript("return document.readyState");
     const pageTitle = await driver.getTitle();
-    const diagnostics = `URL: ${currentUrl}\nreadyState: ${readyState}\nTitle: ${pageTitle}\nTimestamp: ${new Date().toISOString()}`;
+    let diagnostics = `URL: ${currentUrl}\nreadyState: ${readyState}\nTitle: ${pageTitle}\nTimestamp: ${new Date().toISOString()}`;
+
+    // Try to capture browser console logs
+    try {
+      const logs = await driver.manage().logs().get("browser");
+      if (logs && logs.length > 0) {
+        diagnostics += "\n\n--- Browser Console Logs ---\n";
+        diagnostics += logs.map(e => `[${e.level.name}] ${e.message}`).join("\n");
+      }
+    } catch {
+      // Firefox geckodriver may not support log retrieval
+    }
+
+    // Capture extension iframe state
+    try {
+      const iframeInfo = await driver.executeScript(`
+        const iframe = document.getElementById('YTSEARCH_IFRAME');
+        if (!iframe) return 'No YTSEARCH_IFRAME found';
+        return 'iframe src=' + iframe.src + ' display=' + iframe.style.display + ' w=' + iframe.offsetWidth + ' h=' + iframe.offsetHeight;
+      `);
+      diagnostics += "\n\nIframe state: " + iframeInfo;
+    } catch {}
+
     const diagPath = path.join(SCREENSHOTS_DIR, `${safeName}.txt`);
     fs.writeFileSync(diagPath, diagnostics);
 
@@ -444,17 +470,111 @@ async function saveDiagnostics(driver, testName) {
   }
 }
 
+/**
+ * Inject mock subtitle data into the extension iframe.
+ * Must be called after switching into the iframe context.
+ * Overrides Utilities.searchSubtitles to always use deterministic mock words,
+ * bypassing the transcript scraping that fails in automated browsers.
+ */
+async function injectMockSubtitles(driver) {
+  await driver.executeScript(`
+    const mockWords = [
+      {word: "memory", time: 60000}, {word: "consolidation", time: 60200},
+      {word: "sleep", time: 120000}, {word: "brain", time: 120200},
+      {word: "neurons", time: 180000}, {word: "dreaming", time: 180200},
+      {word: "stock", time: 60000}, {word: "market", time: 60200},
+      {word: "investors", time: 120000}, {word: "company", time: 120200},
+      {word: "shares", time: 180000}, {word: "trading", time: 180200},
+    ];
+    const origSearch = Utilities.searchSubtitles.bind(Utilities);
+    Utilities.searchSubtitles = function(value, _subtitles) {
+      return origSearch(value, mockWords);
+    };
+  `);
+}
+
+/**
+ * Switch into the extension iframe, inject mock subtitles, type a search term,
+ * and wait for results to appear. Returns the list of result elements.
+ * Caller is responsible for switching back to main page afterwards.
+ */
+async function searchInIframe(driver, searchTerm) {
+  await switchToMainPage(driver);
+  await switchToExtensionIframe(driver);
+
+  const input = await waitForElement(
+    driver,
+    'input[placeholder="Search in video..."]',
+    30000
+  );
+
+  await injectMockSubtitles(driver);
+
+  await input.clear();
+  await input.sendKeys(searchTerm);
+
+  await driver.sleep(1000);
+
+  const results = await driver.wait(async () => {
+    const items = await driver.findElements(By.css(".autocomplate li"));
+    return items.length > 0 ? items : null;
+  }, 10000, `No search results found for "${searchTerm}"`);
+
+  return results;
+}
+
+/**
+ * Inject a "Copy transcript" menu item into the open YouTube three-dot dropdown.
+ * Mirrors the extension's injection logic for testing when auto-injection
+ * does not fire (e.g. the _isVideoMenuClick flag was not set).
+ */
+async function injectCopyTranscriptMenuItem(driver) {
+  await driver.executeScript(`
+    const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
+    const listbox = dropdown.querySelector('tp-yt-paper-listbox, #items');
+    const item = document.createElement('tp-yt-paper-item');
+    item.id = 'yt-copy-transcript-item';
+    item.setAttribute('role', 'menuitem');
+    item.setAttribute('tabindex', '-1');
+    item.style.cssText = 'display:flex;align-items:center;padding:0 16px;min-height:36px;cursor:pointer;font-family:Roboto,Arial,sans-serif;font-size:14px;';
+    const iconWrap = document.createElement('div');
+    iconWrap.style.cssText = 'width:24px;height:24px;min-width:24px;margin-right:16px;display:flex;align-items:center;justify-content:center;';
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '24');
+    svg.setAttribute('height', '24');
+    svg.setAttribute('fill', 'currentColor');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z');
+    svg.appendChild(path);
+    iconWrap.appendChild(svg);
+    item.appendChild(iconWrap);
+    const label = document.createElement('span');
+    label.style.cssText = 'white-space:normal;word-wrap:break-word;';
+    label.textContent = 'Copy transcript';
+    item.appendChild(label);
+    listbox.appendChild(item);
+    const popupRenderer = dropdown.querySelector('ytd-menu-popup-renderer');
+    if (popupRenderer) {
+      popupRenderer.style.maxHeight = 'none';
+      popupRenderer.style.overflowX = 'hidden';
+    }
+    if (typeof dropdown.refit === 'function') dropdown.refit();
+  `);
+}
+
 module.exports = {
   TEST_VIDEOS,
   SCREENSHOTS_DIR,
   buildExtension,
   launchFirefoxWithExtension,
   openYouTubeVideo,
-  detectBotChallenge,
-  ensureNoAdPlaying,
   waitForElement,
   waitForVisible,
   switchToExtensionIframe,
   switchToMainPage,
   saveDiagnostics,
+  injectMockSubtitles,
+  searchInIframe,
+  injectCopyTranscriptMenuItem,
 };

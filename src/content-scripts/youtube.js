@@ -475,7 +475,7 @@
           const requestId = data.requestId;
           try {
             const result = await getPlayerCaptions();
-            helpers.safePostMessage(event.source, 
+            helpers.safePostMessage(event.source,
               {
                 action: "YT.GET_PLAYER_CAPTIONS.RESULT",
                 requestId,
@@ -486,7 +486,7 @@
               extension_url,
             );
           } catch (e) {
-            helpers.safePostMessage(event.source, 
+            helpers.safePostMessage(event.source,
               {
                 action: "YT.GET_PLAYER_CAPTIONS.RESULT",
                 requestId,
