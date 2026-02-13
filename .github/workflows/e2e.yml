@@ -6,8 +6,6 @@ on:
   # schedule:
   #   - cron: '0 6 * * *'
   workflow_dispatch: {} # Manual trigger for debugging
-  push:
-    branches: [main]
 
 permissions:
   contents: read
