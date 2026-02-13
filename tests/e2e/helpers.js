@@ -84,7 +84,10 @@ function ensureAdblockerUltimateXpi() {
 async function launchFirefoxWithExtension(extensionPath) {
   const options = new firefox.Options();
   const service = new firefox.ServiceBuilder(geckodriver.path);
-  options.addArguments("-headless");
+  // Allow running with a visible browser via E2E_HEADED=1 (useful for local debugging)
+  if (process.env.E2E_HEADED !== "1") {
+    options.addArguments("-headless");
+  }
   // Wider viewport so YouTube renders full player controls
   options.addArguments("-width=1280");
   options.addArguments("-height=900");
@@ -126,23 +129,43 @@ async function launchFirefoxWithExtension(extensionPath) {
 
 /**
  * Check if YouTube is showing a bot challenge / "Sign in to confirm" page.
+ * YouTube often still renders #movie_player in the DOM but shows the bot gate
+ * inside/over the player area, so we must also check player-internal text and
+ * the error overlay state.
  * Returns true if a bot challenge was detected.
  */
 async function detectBotChallenge(driver) {
   try {
     const result = await driver.executeScript(`
       const body = document.body ? document.body.innerText : '';
+      const player = document.querySelector('#movie_player');
+      const playerText = player ? player.innerText : '';
+      const allText = body + '\\n' + playerText;
+
+      // Check for player error overlay (visible .ytp-error or #error-screen)
+      const errorScreen = player && player.querySelector('.ytp-error, #error-screen');
+      const errorVisible = errorScreen ? errorScreen.offsetHeight > 0 : false;
+
+      const video = document.querySelector('video');
+      const hasUsableVideo = !!(video && video.readyState >= 1 && video.duration > 0);
+
       return {
-        hasBotText: /sign in to confirm.*(not a bot|you('re| are) not a robot)/i.test(body),
+        hasBotText: /sign in to confirm|confirm.{0,30}not a bot|are you a robot|bot check/i.test(allText),
         hasChallenge: !!document.querySelector('iframe[src*="google.com/recaptcha"], iframe[src*="challenges.cloudflare.com"], #captcha-form'),
+        hasPlayerError: errorVisible,
         title: document.title,
-        hasPlayer: !!document.querySelector('#movie_player'),
+        hasPlayer: !!player,
+        hasUsableVideo: hasUsableVideo,
       };
     `);
     if (result.hasBotText || result.hasChallenge) {
       return true;
     }
-    // If page loaded but no player and title hints at a challenge
+    // Player exists with a visible error screen but no usable video
+    if (result.hasPlayer && result.hasPlayerError && !result.hasUsableVideo) {
+      return true;
+    }
+    // No player at all and title hints at a challenge
     if (!result.hasPlayer && /confirm|verify|bot|captcha/i.test(result.title)) {
       return true;
     }
@@ -201,6 +224,13 @@ async function openYouTubeVideo(driver, url) {
   // Handle ads
   const videoReady = await ensureNoAdPlaying(driver);
   if (!videoReady) {
+    // Video never became usable — recheck for bot challenge (the gate may
+    // render inside #movie_player so the earlier check could have missed it)
+    if (await detectBotChallenge(driver)) {
+      console.warn("openYouTubeVideo: YouTube bot challenge detected (video not usable) — tests will be skipped");
+      driver._botChallengeDetected = true;
+      return;
+    }
     console.warn("openYouTubeVideo: proceeding even though video readiness was not confirmed");
   }
 }
@@ -267,6 +297,7 @@ async function handleConsentInterstitial(driver) {
 async function ensureNoAdPlaying(driver) {
   const maxWait = 90000; // 90s max for long prerolls/non-skippable ads
   const start = Date.now();
+  let lastBotCheck = 0;
 
   while (Date.now() - start < maxWait) {
     const state = await driver.executeScript(`
@@ -279,6 +310,16 @@ async function ensureNoAdPlaying(driver) {
         duration: video ? video.duration : NaN,
       };
     `);
+
+    // Every 15s, check for bot challenge so we can bail out early
+    const elapsed = Date.now() - start;
+    if (elapsed - lastBotCheck >= 15000) {
+      lastBotCheck = elapsed;
+      if (await detectBotChallenge(driver)) {
+        console.warn("ensureNoAdPlaying: bot challenge detected, exiting early");
+        return false;
+      }
+    }
 
     if (!state.adShowing) {
       // Some CI runs stay paused in headless mode unless playback is nudged.
