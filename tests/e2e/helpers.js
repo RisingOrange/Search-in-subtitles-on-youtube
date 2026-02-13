@@ -86,6 +86,9 @@ async function launchFirefoxWithExtension(extensionPath) {
     "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0"
   );
 
+  // Mute all audio output at the browser level
+  options.setPreference("media.volume_scale", "0.0");
+
   // Allow overriding Firefox binary path via env var (useful for local dev)
   if (process.env.FIREFOX_BIN) {
     options.setBinary(process.env.FIREFOX_BIN);
