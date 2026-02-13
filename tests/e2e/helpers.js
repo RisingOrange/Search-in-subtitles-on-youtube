@@ -113,7 +113,10 @@ async function openYouTubeVideo(driver, url) {
   await waitForElement(driver, "#movie_player", 20000);
 
   // Handle ads
-  await ensureNoAdPlaying(driver);
+  const videoReady = await ensureNoAdPlaying(driver);
+  if (!videoReady) {
+    console.warn("openYouTubeVideo: proceeding even though video readiness was not confirmed");
+  }
 }
 
 /**
@@ -201,9 +204,10 @@ async function ensureNoAdPlaying(driver) {
       `);
 
       // Metadata/data is enough for subtitle search; full playback can start later.
-      const isUsable = state.hasVideo && state.readyState >= 1 && !isNaN(state.duration) && state.duration > 0;
+      const isUsable =
+        state.hasVideo && state.readyState >= 1 && !isNaN(state.duration) && state.duration > 0;
       if (isUsable) {
-        return;
+        return true;
       }
     }
 
@@ -231,8 +235,11 @@ async function ensureNoAdPlaying(driver) {
     await driver.sleep(1000);
   }
 
-  throw new Error("Timed out waiting for ads to finish or for video metadata to load");
+  // Best effort only: don't fail suite setup if ads or metadata are still loading.
+  console.warn("ensureNoAdPlaying: continuing without confirmed playable video state");
+  return false;
 }
+
 
 /**
  * Wait for an element to appear in the DOM.
