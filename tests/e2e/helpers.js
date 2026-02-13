@@ -113,7 +113,10 @@ async function openYouTubeVideo(driver, url) {
   await waitForElement(driver, "#movie_player", 20000);
 
   // Handle ads
-  await ensureNoAdPlaying(driver);
+  const videoReady = await ensureNoAdPlaying(driver);
+  if (!videoReady) {
+    console.warn("openYouTubeVideo: proceeding even though video readiness was not confirmed");
+  }
 }
 
 /**
