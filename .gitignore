@@ -5,3 +5,7 @@ screenshots/
 node_modules/
 
 experiments/
+
+# E2E test artifacts
+dist/
+tests/e2e/screenshots/
