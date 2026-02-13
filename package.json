@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/e2e/*.test.js",
+    "test:build": "npx web-ext build --overwrite-dest --artifacts-dir=dist/web-ext-artifacts"
+  },
+  "devDependencies": {
+    "geckodriver": "^4.5.1",
+    "selenium-webdriver": "^4.27.0",
+    "web-ext": "^8.4.0"
+  }
+}
