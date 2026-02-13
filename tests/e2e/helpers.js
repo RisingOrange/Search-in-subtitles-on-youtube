@@ -8,6 +8,11 @@ const path = require("path");
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const ARTIFACTS_DIR = path.join(PROJECT_ROOT, "dist", "web-ext-artifacts");
 const SCREENSHOTS_DIR = path.join(__dirname, "screenshots");
+const ADBLOCKER_CACHE_DIR = path.join(PROJECT_ROOT, "dist", "e2e-addons");
+const ADBLOCKER_XPI_PATH = path.join(ADBLOCKER_CACHE_DIR, "adblocker-ultimate-latest.xpi");
+const ADBLOCKER_DOWNLOAD_URL =
+  process.env.ADBLOCKER_ULTIMATE_URL ||
+  "https://addons.mozilla.org/firefox/downloads/latest/adblocker-ultimate/addon-494908-latest.xpi";
 
 // Two test videos for redundancy — if one gets removed/restricted, the other still works.
 // Both have creator-provided English captions.
@@ -59,6 +64,23 @@ function buildExtension() {
  * Launch Firefox with the extension installed.
  * Returns { driver, extensionId }.
  */
+
+/**
+ * Download AdBlocker Ultimate XPI and return local file path.
+ * Best-effort: throws only if download command fails.
+ */
+function ensureAdblockerUltimateXpi() {
+  if (!fs.existsSync(ADBLOCKER_CACHE_DIR)) {
+    fs.mkdirSync(ADBLOCKER_CACHE_DIR, { recursive: true });
+  }
+
+  if (!fs.existsSync(ADBLOCKER_XPI_PATH)) {
+    execSync(`curl -fsSL "${ADBLOCKER_DOWNLOAD_URL}" -o "${ADBLOCKER_XPI_PATH}"`);
+  }
+
+  return ADBLOCKER_XPI_PATH;
+}
+
 async function launchFirefoxWithExtension(extensionPath) {
   const options = new firefox.Options();
   const service = new firefox.ServiceBuilder(geckodriver.path);
@@ -77,6 +99,16 @@ async function launchFirefoxWithExtension(extensionPath) {
     .setFirefoxService(service)
     .setFirefoxOptions(options)
     .build();
+
+  // Install AdBlocker Ultimate first to reduce YouTube preroll ad flakiness.
+  if (process.env.E2E_ENABLE_ADBLOCKER !== "0") {
+    try {
+      const adblockerPath = ensureAdblockerUltimateXpi();
+      await driver.installAddon(adblockerPath, true);
+    } catch (e) {
+      console.warn(`AdBlocker Ultimate installation failed: ${e.message}`);
+    }
+  }
 
   // Install extension as temporary addon (works without signing)
   await driver.installAddon(extensionPath, true);
