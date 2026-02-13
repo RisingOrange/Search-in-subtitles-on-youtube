@@ -1,12 +1,12 @@
 const {
-  TEST_VIDEOS,
+  TEST_VIDEO,
   buildExtension,
   launchFirefoxWithExtension,
   openYouTubeVideo,
 } = require("./helpers");
 
 async function main() {
-  const url = process.env.DEV_BROWSER_URL || TEST_VIDEOS[0].url;
+  const url = process.env.DEV_BROWSER_URL || TEST_VIDEO.url;
 
   console.log("Building extension...");
   const extensionPath = buildExtension();

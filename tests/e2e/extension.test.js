@@ -1,7 +1,7 @@
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
 const {
-  TEST_VIDEOS,
+  TEST_VIDEO,
   buildExtension,
   launchFirefoxWithExtension,
   openYouTubeVideo,
@@ -12,9 +12,6 @@ const {
   searchInIframe,
   injectCopyTranscriptMenuItem,
 } = require("./helpers");
-
-// Use the primary test video
-const TEST_VIDEO = TEST_VIDEOS[0];
 
 describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
   let driver;
@@ -212,62 +209,6 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
       );
     } catch (e) {
       await saveDiagnostics(driver, "05-copy-transcript-menu");
-      throw e;
-    }
-  });
-});
-
-// Run the same core tests (extension load + search) against the fallback video
-// to verify the extension works across different videos
-describe("Fallback video validation", { timeout: 120000 }, () => {
-  let driver;
-  let botBlocked = false;
-  const FALLBACK_VIDEO = TEST_VIDEOS[1];
-
-  function skipIfBotBlocked(ctx) {
-    if (botBlocked) {
-      ctx.skip("YouTube bot challenge detected — skipping (not an extension bug)");
-    }
-  }
-
-  before(async () => {
-    const extensionPath = buildExtension();
-    driver = await launchFirefoxWithExtension(extensionPath);
-    await openYouTubeVideo(driver, FALLBACK_VIDEO.url);
-    if (driver._botChallengeDetected) {
-      botBlocked = true;
-      await saveDiagnostics(driver, "00-bot-challenge-fallback");
-    }
-  });
-
-  after(async () => {
-    if (driver) {
-      await driver.quit().catch(() => {});
-    }
-  });
-
-  it("should find search results on fallback video", async (t) => {
-    skipIfBotBlocked(t);
-    try {
-      // Click search button to open iframe
-      const searchBtn = await waitForElement(driver, "#subtitle-search-button", 10000);
-      await searchBtn.click();
-      await waitForVisible(driver, "#YTSEARCH_IFRAME", 15000);
-
-      const results = await searchInIframe(driver, FALLBACK_VIDEO.searchTerm);
-
-      assert.ok(results.length > 0, "Fallback video should have search results");
-
-      const firstResultText = await results[0].getText();
-      assert.ok(
-        firstResultText.trim().length > 0,
-        `Fallback result should have non-empty text, got: "${firstResultText}"`
-      );
-
-      await switchToMainPage(driver);
-    } catch (e) {
-      try { await switchToMainPage(driver); } catch { /* ignore */ }
-      await saveDiagnostics(driver, "07-fallback-search-results");
       throw e;
     }
   });

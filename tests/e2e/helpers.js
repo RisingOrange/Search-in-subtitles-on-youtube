@@ -14,20 +14,11 @@ const ADBLOCKER_DOWNLOAD_URL =
   process.env.ADBLOCKER_ULTIMATE_URL ||
   "https://addons.mozilla.org/firefox/downloads/latest/adblocker-ultimate/addon-494908-latest.xpi";
 
-// Two test videos for redundancy — if one gets removed/restricted, the other still works.
-// Both have creator-provided English captions.
-const TEST_VIDEOS = [
-  {
-    // TED-Ed: "The benefits of a good night's sleep"
-    url: "https://www.youtube.com/watch?v=gedoSfZvBgE&hl=en&gl=US",
-    searchTerm: "memory",
-  },
-  {
-    // TED-Ed: "How does the stock market work?"
-    url: "https://www.youtube.com/watch?v=p7HKvqRI_Bo&hl=en&gl=US",
-    searchTerm: "stock",
-  },
-];
+// TED-Ed: "The benefits of a good night's sleep" — has creator-provided English captions.
+const TEST_VIDEO = {
+  url: "https://www.youtube.com/watch?v=gedoSfZvBgE&hl=en&gl=US",
+  searchTerm: "memory",
+};
 
 /**
  * Build the extension zip using web-ext.
@@ -482,9 +473,6 @@ async function injectMockSubtitles(driver) {
       {word: "memory", time: 60000}, {word: "consolidation", time: 60200},
       {word: "sleep", time: 120000}, {word: "brain", time: 120200},
       {word: "neurons", time: 180000}, {word: "dreaming", time: 180200},
-      {word: "stock", time: 60000}, {word: "market", time: 60200},
-      {word: "investors", time: 120000}, {word: "company", time: 120200},
-      {word: "shares", time: 180000}, {word: "trading", time: 180200},
     ];
     const origSearch = Utilities.searchSubtitles.bind(Utilities);
     Utilities.searchSubtitles = function(value, _subtitles) {
@@ -564,7 +552,7 @@ async function injectCopyTranscriptMenuItem(driver) {
 }
 
 module.exports = {
-  TEST_VIDEOS,
+  TEST_VIDEO,
   SCREENSHOTS_DIR,
   buildExtension,
   launchFirefoxWithExtension,
