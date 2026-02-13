@@ -84,7 +84,10 @@ function ensureAdblockerUltimateXpi() {
 async function launchFirefoxWithExtension(extensionPath) {
   const options = new firefox.Options();
   const service = new firefox.ServiceBuilder(geckodriver.path);
-  options.addArguments("-headless");
+  // Allow running with a visible browser via E2E_HEADED=1 (useful for local debugging)
+  if (process.env.E2E_HEADED !== "1") {
+    options.addArguments("-headless");
+  }
   // Wider viewport so YouTube renders full player controls
   options.addArguments("-width=1280");
   options.addArguments("-height=900");
