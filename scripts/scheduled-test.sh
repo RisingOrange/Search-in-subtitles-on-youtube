@@ -12,7 +12,13 @@
 
 set -uo pipefail
 
+# Load nvm so node/npm are available in cron's minimal environment
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
 cd "$(dirname "$0")/.."
+
+BOT_TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/yt-search-e2e-bot-token"
 
 STAMP_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/yt-search-e2e-last-run"
 mkdir -p "$(dirname "$STAMP_FILE")"
@@ -36,9 +42,10 @@ fi
 # Extract summary: last 60 lines should capture the test output + failures
 TAIL=$(tail -60 "$LOG")
 
-gh issue create \
+GH_TOKEN=$(cat "$BOT_TOKEN_FILE") gh issue create \
   --title "Scheduled e2e tests failed ($(date +%Y-%m-%d))" \
   --label "bot,e2e-failure" \
+  --assignee RisingOrange \
   --body "$(cat <<EOF
 The daily scheduled e2e test run failed with exit code \`$EXIT_CODE\`.
 
