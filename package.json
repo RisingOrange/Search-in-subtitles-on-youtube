@@ -1,5 +1,17 @@
 {
   "private": true,
+  "webExt": {
+    "ignoreFiles": [
+      "scripts",
+      "tests",
+      "dist",
+      "node_modules",
+      "CLAUDE.md",
+      "package.json",
+      "package-lock.json",
+      ".web-extension-id"
+    ]
+  },
   "scripts": {
     "test": "node --test --test-concurrency=1 tests/e2e/*.test.js",
     "test:build": "npx web-ext build --overwrite-dest --artifacts-dir=dist/web-ext-artifacts"
