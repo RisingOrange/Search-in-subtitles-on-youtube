@@ -610,105 +610,155 @@
     return parent.querySelectorAll(selector);
   }
 
+  // Parse a timestamp string like "0:09" or "1:23:45" into milliseconds
+  function parseTimestamp(timeText) {
+    if (!timeText) return 0;
+    const parts = timeText.split(':').map(p => parseInt(p) || 0);
+    if (parts.length === 2) return (parts[0] * 60 + parts[1]) * 1000;
+    if (parts.length === 3) return (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
+    return 0;
+  }
+
+  // Scrape transcript segments from the old UI (engagement-panel-searchable-transcript)
+  // Uses ytd-transcript-segment-renderer elements inside ytd-transcript-renderer.
+  async function scrapeOldTranscriptUI(transcriptPanel) {
+    const cues = [];
+    const segments = await waitForSelector(transcriptPanel, 'ytd-transcript-segment-renderer');
+
+    // Wait for content to load - YouTube lazy loads transcript text
+    // (innerText triggers layout reflow, so cache the result)
+    const start = Date.now();
+    let firstText = '';
+    while (Date.now() - start < 5000) {
+      firstText = segments.length > 0 ? (segments[0].innerText || '').trim() : '';
+      if (firstText) break;
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    if (!firstText) return cues;
+
+    for (const seg of segments) {
+      const tsEl = seg.querySelector('.segment-timestamp, [class*="timestamp"]');
+      const txtEl = seg.querySelector('.segment-text, [class*="text"], yt-formatted-string');
+
+      let timeText = '';
+      let text = '';
+
+      if (tsEl && txtEl) {
+        timeText = tsEl.innerText.trim();
+        text = txtEl.innerText.trim();
+      } else {
+        // Fallback: parse innerText
+        const fullText = seg.innerText.trim();
+        const lines = fullText.split(/[\n\r]+/).filter(l => l.trim());
+
+        if (lines.length >= 2) {
+          timeText = lines[0].trim();
+          text = lines.slice(1).join(' ').trim();
+        } else if (lines.length === 1) {
+          const match = lines[0].match(/^(\d+:\d+(?::\d+)?)\s*(.*)/);
+          if (match) {
+            timeText = match[1];
+            text = match[2];
+          } else {
+            text = lines[0];
+          }
+        }
+      }
+
+      if (text) cues.push({ startMs: parseTimestamp(timeText), text });
+    }
+
+    return cues;
+  }
+
+  // Scrape transcript segments from the modern UI (PAmodern_transcript_view)
+  // Uses transcript-segment-view-model elements inside macro-markers-panel-item-view-model.
+  async function scrapeModernTranscriptUI(transcriptPanel) {
+    const cues = [];
+    const segments = await waitForSelector(transcriptPanel, 'transcript-segment-view-model');
+
+    if (segments.length === 0) return cues;
+
+    // Wait for text to hydrate — YouTube may render empty shells first
+    const start = Date.now();
+    while (Date.now() - start < 5000) {
+      const txt = segments[0].querySelector('span.yt-core-attributed-string');
+      if (txt && txt.innerText && txt.innerText.trim()) break;
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    for (const seg of segments) {
+      const tsEl = seg.querySelector('.ytwTranscriptSegmentViewModelTimestamp');
+      const txtEl = seg.querySelector('span.yt-core-attributed-string');
+
+      const timeText = tsEl ? tsEl.innerText.trim() : '';
+      const text = txtEl ? txtEl.innerText.trim() : '';
+
+      if (text) cues.push({ startMs: parseTimestamp(timeText), text });
+    }
+
+    return cues;
+  }
+
   // Scrape transcript from DOM (content script can access DOM directly)
   async function scrapeTranscriptFromDOM() {
-    const transcriptCues = [];
     let hiddenStyle = null;
 
     try {
       // Find transcript button (structural selector, language-agnostic)
       const transcriptBtn = document.querySelector('ytd-video-description-transcript-section-renderer button');
-      if (!transcriptBtn) return transcriptCues;
+      if (!transcriptBtn) return [];
 
-      // Hide panel with opacity and position:fixed to avoid layout shift
-      // (visibility:hidden prevents rendering, so we use opacity instead)
+      // Hide both transcript panel variants with opacity and position:fixed to avoid layout shift
+      // (visibility:hidden prevents innerText rendering, so we use opacity instead)
       hiddenStyle = document.createElement('style');
-      hiddenStyle.textContent = 'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"] { opacity: 0 !important; pointer-events: none !important; position: fixed !important; top: 0 !important; left: 0 !important; }';
+      hiddenStyle.textContent = `
+        ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"],
+        ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"] {
+          opacity: 0 !important; pointer-events: none !important;
+          position: fixed !important; top: 0 !important; left: 0 !important;
+        }`;
       document.head.appendChild(hiddenStyle);
 
       transcriptBtn.click();
-      await new Promise(r => setTimeout(r, 500));
 
-      // Find and scrape transcript panel
-      const transcriptPanel = document.querySelector('ytd-transcript-renderer, ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]');
+      // Poll for either transcript panel to open (up to 5s)
+      const expandedSelector =
+        'ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"],'
+        + 'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"]';
+      let openPanel = null;
+      const panelWaitStart = Date.now();
+      while (Date.now() - panelWaitStart < 5000) {
+        openPanel = document.querySelector(expandedSelector);
+        if (openPanel) break;
+        await new Promise(r => setTimeout(r, 300));
+      }
+      if (!openPanel) return [];
 
-      if (transcriptPanel) {
-        const segments = await waitForSelector(transcriptPanel, 'ytd-transcript-segment-renderer');
+      let transcriptCues = [];
+      const isModern = openPanel.getAttribute('target-id') === 'PAmodern_transcript_view';
 
-        // Wait for content to load - YouTube lazy loads transcript text
-        const waitForContent = async (maxWait = 5000) => {
-          const start = Date.now();
-          while (Date.now() - start < maxWait) {
-            if (segments.length > 0 && segments[0].innerText && segments[0].innerText.trim()) {
-              return true;
-            }
-            await new Promise(r => setTimeout(r, 200));
-          }
-          return false;
-        };
-
-        const contentLoaded = await waitForContent();
-
-        // Only scrape if content loaded
-        if (contentLoaded) {
-          for (const seg of segments) {
-            // Try to find structured elements first
-            const tsEl = seg.querySelector('.segment-timestamp, [class*="timestamp"]');
-            const txtEl = seg.querySelector('.segment-text, [class*="text"], yt-formatted-string');
-
-            let timeText = '';
-            let text = '';
-
-            if (tsEl && txtEl) {
-              timeText = tsEl.innerText.trim();
-              text = txtEl.innerText.trim();
-            } else {
-              // Fallback: parse innerText
-              const fullText = seg.innerText.trim();
-              const lines = fullText.split(/[\n\r]+/).filter(l => l.trim());
-
-              if (lines.length >= 2) {
-                timeText = lines[0].trim();
-                text = lines.slice(1).join(' ').trim();
-              } else if (lines.length === 1) {
-                const match = lines[0].match(/^(\d+:\d+(?::\d+)?)\s*(.*)/);
-                if (match) {
-                  timeText = match[1];
-                  text = match[2];
-                } else {
-                  text = lines[0];
-                }
-              }
-            }
-
-            // Parse timestamp
-            let startMs = 0;
-            if (timeText) {
-              const parts = timeText.split(':').map(p => parseInt(p) || 0);
-              if (parts.length === 2) startMs = (parts[0] * 60 + parts[1]) * 1000;
-              else if (parts.length === 3) startMs = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
-            }
-
-            if (text) transcriptCues.push({ startMs, text });
-          }
-        }
+      if (isModern) {
+        transcriptCues = await scrapeModernTranscriptUI(openPanel);
+      } else {
+        transcriptCues = await scrapeOldTranscriptUI(openPanel);
       }
 
-      // Close panel
-      const engagementPanel = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]');
-      if (engagementPanel) {
-        const closeBtn = engagementPanel.querySelector('#visibility-button button');
+      // Close whichever panel was opened
+      if (openPanel) {
+        const closeBtn = openPanel.querySelector('#visibility-button button');
         if (closeBtn) {
           closeBtn.click();
           await new Promise(r => setTimeout(r, 300));
         }
       }
+
+      return transcriptCues;
     } finally {
       // Always clean up hidden style
       if (hiddenStyle) hiddenStyle.remove();
     }
-
-    return transcriptCues;
   }
 
   function cacheTranscript(videoId, cues) {

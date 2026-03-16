@@ -15,9 +15,16 @@ const ADBLOCKER_DOWNLOAD_URL =
   "https://addons.mozilla.org/firefox/downloads/latest/adblocker-ultimate/addon-494908-latest.xpi";
 
 // TED-Ed: "The benefits of a good night's sleep" — has creator-provided English captions.
+// Uses old transcript UI (engagement-panel-searchable-transcript with ytd-transcript-segment-renderer).
 const TEST_VIDEO = {
   url: "https://www.youtube.com/watch?v=gedoSfZvBgE&hl=en&gl=US",
   searchTerm: "memory",
+};
+
+// Video with modern transcript UI (PAmodern_transcript_view with transcript-segment-view-model).
+const TEST_VIDEO_MODERN_UI = {
+  url: "https://www.youtube.com/watch?v=nve6PtFJeo4&hl=en&gl=US",
+  searchTerm: "claude",
 };
 
 /**
@@ -556,6 +563,7 @@ async function injectCopyTranscriptMenuItem(driver) {
 
 module.exports = {
   TEST_VIDEO,
+  TEST_VIDEO_MODERN_UI,
   SCREENSHOTS_DIR,
   buildExtension,
   launchFirefoxWithExtension,
