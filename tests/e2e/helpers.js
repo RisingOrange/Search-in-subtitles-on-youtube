@@ -402,11 +402,90 @@ async function waitForVisible(driver, cssSelector, timeoutMs = 10000) {
 }
 
 /**
+ * Return true when the search iframe exists and is visibly rendered.
+ */
+async function isSearchIframeVisible(driver) {
+  return driver.executeScript(`
+    const iframe = document.getElementById('YTSEARCH_IFRAME');
+    return !!(
+      iframe &&
+      iframe.offsetWidth > 0 &&
+      iframe.offsetHeight > 0 &&
+      getComputedStyle(iframe).display !== 'none' &&
+      getComputedStyle(iframe).visibility !== 'hidden'
+    );
+  `);
+}
+
+/**
+ * Nudge the YouTube player so its controls are visible and clickable.
+ */
+async function revealPlayerControls(driver) {
+  await driver.executeScript(`
+    const player = document.querySelector('#movie_player');
+    if (!player) return false;
+
+    const rect = player.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height - 30;
+    for (const type of ['mouseenter', 'mousemove', 'mouseover']) {
+      player.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        clientX: x,
+        clientY: y,
+      }));
+    }
+    return true;
+  `);
+  await driver.wait(async () => {
+    return driver.executeScript(`
+      const btn = document.querySelector('#subtitle-search-button');
+      if (!btn) return false;
+      const style = getComputedStyle(btn);
+      return btn.offsetWidth > 0 &&
+        btn.offsetHeight > 0 &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden';
+    `);
+  }, 3000, "Search button did not become visible after revealing player controls");
+}
+
+/**
+ * Ensure the search iframe is open and visible.
+ * Returns the iframe element in the main page context.
+ */
+async function ensureSearchIframeOpen(driver) {
+  await switchToMainPage(driver);
+
+  if (await isSearchIframeVisible(driver)) {
+    return waitForVisible(driver, "#YTSEARCH_IFRAME", 1000);
+  }
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await revealPlayerControls(driver);
+    const searchBtn = await waitForVisible(driver, "#subtitle-search-button", 10000);
+
+    try {
+      await searchBtn.click();
+    } catch {
+      await driver.executeScript("arguments[0].click()", searchBtn);
+    }
+
+    try {
+      return await waitForVisible(driver, "#YTSEARCH_IFRAME", 5000);
+    } catch {
+      // Retry once after re-revealing player controls in case YouTube hid them mid-click.
+    }
+  }
+
+  return waitForVisible(driver, "#YTSEARCH_IFRAME", 15000);
+}
+
+/**
  * Switch into the extension's search iframe.
  */
 async function switchToExtensionIframe(driver) {
-
-  const iframe = await waitForElement(driver, "#YTSEARCH_IFRAME", 15000);
+  const iframe = await ensureSearchIframeOpen(driver);
   await driver.switchTo().frame(iframe);
 }
 
@@ -570,6 +649,8 @@ module.exports = {
   openYouTubeVideo,
   waitForElement,
   waitForVisible,
+  revealPlayerControls,
+  ensureSearchIframeOpen,
   switchToExtensionIframe,
   switchToMainPage,
   saveDiagnostics,

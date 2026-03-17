@@ -8,6 +8,7 @@ const {
   openYouTubeVideo,
   waitForElement,
   waitForVisible,
+  revealPlayerControls,
   switchToMainPage,
   saveDiagnostics,
   searchInIframe,
@@ -68,7 +69,10 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
   it("should open the search iframe when the search button is clicked", async (t) => {
     skipIfBotBlocked(t);
     try {
-      const searchBtn = await waitForElement(driver, "#subtitle-search-button", 10000);
+      await switchToMainPage(driver);
+      await revealPlayerControls(driver);
+
+      const searchBtn = await waitForVisible(driver, "#subtitle-search-button", 10000);
       await searchBtn.click();
 
       // Wait for iframe to become visible
