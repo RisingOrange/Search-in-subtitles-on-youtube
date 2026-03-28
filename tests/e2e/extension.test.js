@@ -25,6 +25,81 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     }
   }
 
+  async function getTranscriptPanelState() {
+    return driver.executeScript(`
+      const expandedPanels = [...document.querySelectorAll('ytd-engagement-panel-section-list-renderer')]
+        .filter((panel) => panel.getAttribute('visibility') === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED');
+
+      const transcriptPanels = expandedPanels.filter((panel) =>
+        panel.querySelector('transcript-segment-view-model, ytd-transcript-segment-renderer')
+        || panel.querySelector('ytd-transcript-search-panel-renderer, ytd-transcript-renderer')
+        || panel.getAttribute('target-id') === 'PAmodern_transcript_view'
+        || panel.getAttribute('target-id') === 'engagement-panel-searchable-transcript'
+      );
+
+      return {
+        expandedPanelCount: expandedPanels.length,
+        transcriptPanelCount: transcriptPanels.length,
+        transcriptPanelSummaries: transcriptPanels.map((panel) => ({
+          targetId: panel.getAttribute('target-id'),
+          textSample: (panel.innerText || '').trim().slice(0, 120),
+        })),
+      };
+    `);
+  }
+
+  async function openTranscriptPanelFromPage() {
+    return driver.executeScript(`
+      return new Promise(async (resolve) => {
+        try {
+          const btn = document.querySelector('ytd-video-description-transcript-section-renderer button');
+          if (!btn) {
+            resolve({ ok: false, error: 'no transcript button' });
+            return;
+          }
+
+          btn.scrollIntoView({ block: 'center' });
+          await new Promise((r) => setTimeout(r, 500));
+
+          const beforeExpanded = [...document.querySelectorAll('ytd-engagement-panel-section-list-renderer')]
+            .filter((panel) => panel.getAttribute('visibility') === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED')
+            .length;
+
+          btn.click();
+
+          const start = Date.now();
+          while (Date.now() - start < 5000) {
+            const expandedPanels = [...document.querySelectorAll('ytd-engagement-panel-section-list-renderer')]
+              .filter((panel) => panel.getAttribute('visibility') === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED');
+
+            const transcriptPanel = expandedPanels.find((panel) =>
+              panel.querySelector('transcript-segment-view-model, ytd-transcript-segment-renderer')
+              || panel.querySelector('ytd-transcript-search-panel-renderer, ytd-transcript-renderer')
+              || panel.getAttribute('target-id') === 'PAmodern_transcript_view'
+              || panel.getAttribute('target-id') === 'engagement-panel-searchable-transcript'
+            );
+
+            if (transcriptPanel) {
+              resolve({
+                ok: true,
+                targetId: transcriptPanel.getAttribute('target-id'),
+                expandedPanelCount: expandedPanels.length,
+                beforeExpanded,
+              });
+              return;
+            }
+
+            await new Promise((r) => setTimeout(r, 250));
+          }
+
+          resolve({ ok: false, error: 'transcript panel did not open' });
+        } catch (error) {
+          resolve({ ok: false, error: error.message });
+        }
+      });
+    `);
+  }
+
   before(async () => {
     const extensionPath = buildExtension();
     driver = await launchFirefoxWithExtension(extensionPath);
@@ -66,6 +141,24 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     }
   });
 
+  it("should not open the transcript panel on page load", async (t) => {
+    skipIfBotBlocked(t);
+    try {
+      await switchToMainPage(driver);
+      await driver.sleep(3000);
+      const transcriptState = await getTranscriptPanelState();
+
+      assert.strictEqual(
+        transcriptState.transcriptPanelCount,
+        0,
+        `Transcript panel should stay closed until user action, got: ${JSON.stringify(transcriptState)}`
+      );
+    } catch (e) {
+      await saveDiagnostics(driver, "01a-no-transcript-on-load");
+      throw e;
+    }
+  });
+
   it("should open the search iframe when the search button is clicked", async (t) => {
     skipIfBotBlocked(t);
     try {
@@ -91,6 +184,42 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
       );
     } catch (e) {
       await saveDiagnostics(driver, "02-search-iframe-opens");
+      throw e;
+    }
+  });
+
+  it("should not open the transcript panel when only opening search UI", async (t) => {
+    skipIfBotBlocked(t);
+    try {
+      await switchToMainPage(driver);
+      const iframeAlreadyVisible = await driver.executeScript(`
+        const iframe = document.getElementById('YTSEARCH_IFRAME');
+        return !!(
+          iframe &&
+          iframe.offsetWidth > 0 &&
+          iframe.offsetHeight > 0 &&
+          getComputedStyle(iframe).display !== 'none' &&
+          getComputedStyle(iframe).visibility !== 'hidden'
+        );
+      `);
+
+      if (!iframeAlreadyVisible) {
+        await revealPlayerControls(driver);
+        const searchBtn = await waitForVisible(driver, "#subtitle-search-button", 10000);
+        await searchBtn.click();
+        await waitForVisible(driver, "#YTSEARCH_IFRAME", 15000);
+      }
+      await driver.sleep(1500);
+
+      const transcriptState = await getTranscriptPanelState();
+
+      assert.strictEqual(
+        transcriptState.transcriptPanelCount,
+        0,
+        `Opening search UI should not open transcript panel, got: ${JSON.stringify(transcriptState)}`
+      );
+    } catch (e) {
+      await saveDiagnostics(driver, "02a-no-transcript-on-search-open");
       throw e;
     }
   });
@@ -214,6 +343,53 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
       );
     } catch (e) {
       await saveDiagnostics(driver, "05-copy-transcript-menu");
+      throw e;
+    }
+  });
+
+  it("should leave an already open transcript panel visible when copying transcript", async (t) => {
+    skipIfBotBlocked(t);
+    try {
+      await switchToMainPage(driver);
+      const openResult = await openTranscriptPanelFromPage();
+      assert.ok(openResult.ok, `Failed to open transcript panel: ${openResult.error}`);
+
+      const transcriptStateBefore = await getTranscriptPanelState();
+      assert.strictEqual(
+        transcriptStateBefore.transcriptPanelCount,
+        1,
+        `Expected transcript panel to be open before copying, got: ${JSON.stringify(transcriptStateBefore)}`
+      );
+
+      const menuBtn = await waitForElement(
+        driver,
+        "#actions ytd-menu-renderer > yt-button-shape#button-shape button",
+        10000
+      );
+      await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
+      await driver.sleep(500);
+      await menuBtn.click();
+      await driver.sleep(1000);
+
+      const autoInjected = await driver.executeScript(
+        "return !!document.querySelector('#yt-copy-transcript-item')"
+      );
+      if (!autoInjected) {
+        await injectCopyTranscriptMenuItem(driver);
+      }
+
+      const copyItem = await waitForElement(driver, "#yt-copy-transcript-item", 5000);
+      await copyItem.click();
+      await driver.sleep(2000);
+
+      const transcriptStateAfter = await getTranscriptPanelState();
+      assert.strictEqual(
+        transcriptStateAfter.transcriptPanelCount,
+        1,
+        `Transcript panel should remain visible after copying, got: ${JSON.stringify(transcriptStateAfter)}`
+      );
+    } catch (e) {
+      await saveDiagnostics(driver, "06-copy-while-transcript-open");
       throw e;
     }
   });

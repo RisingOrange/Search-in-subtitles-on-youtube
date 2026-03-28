@@ -749,35 +749,137 @@
     return bestMatch;
   }
 
+  function snapshotPanelVisibility() {
+    return new Map(
+      Array.from(document.querySelectorAll('ytd-engagement-panel-section-list-renderer'))
+        .map((panel) => [panel, panel.getAttribute('visibility') || ''])
+    );
+  }
+
+  function findNewlyExpandedTranscriptPanel(previousVisibility) {
+    const expandedPanels = Array.from(document.querySelectorAll('ytd-engagement-panel-section-list-renderer'))
+      .filter(isExpandedPanel);
+
+    for (const panel of expandedPanels) {
+      const prev = previousVisibility.get(panel) || '';
+      if (prev === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED') continue;
+
+      const kind = getTranscriptPanelKind(panel);
+      if (kind) {
+        return { panel, kind };
+      }
+    }
+
+    return null;
+  }
+
+  function hidePanelForScraping(panel) {
+    if (!panel) return null;
+
+    const previousStyle = {
+      opacity: panel.style.opacity,
+      pointerEvents: panel.style.pointerEvents,
+      position: panel.style.position,
+      top: panel.style.top,
+      left: panel.style.left,
+    };
+
+    panel.style.opacity = '0';
+    panel.style.pointerEvents = 'none';
+    panel.style.position = 'fixed';
+    panel.style.top = '0';
+    panel.style.left = '0';
+
+    return () => {
+      panel.style.opacity = previousStyle.opacity;
+      panel.style.pointerEvents = previousStyle.pointerEvents;
+      panel.style.position = previousStyle.position;
+      panel.style.top = previousStyle.top;
+      panel.style.left = previousStyle.left;
+    };
+  }
+
+  function waitForPanelToExpand(previousVisibility, maxWait = 5000) {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + maxWait;
+      let done = false;
+
+      function finish(result) {
+        if (done) return;
+        done = true;
+        observer.disconnect();
+        clearTimeout(timeoutId);
+        resolve(result);
+      }
+
+      function findCandidate() {
+        return Array.from(document.querySelectorAll('ytd-engagement-panel-section-list-renderer'))
+          .find((panel) => {
+            if (!isExpandedPanel(panel)) return false;
+            const prev = previousVisibility.get(panel) || '';
+            return prev !== 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED';
+          }) || null;
+      }
+
+      const immediateCandidate = findCandidate();
+      if (immediateCandidate) {
+        resolve(immediateCandidate);
+        return;
+      }
+
+      const observer = new MutationObserver(() => {
+        const candidate = findCandidate();
+        if (candidate) {
+          finish(candidate);
+        } else if (Date.now() >= deadline) {
+          finish(null);
+        }
+      });
+
+      observer.observe(document.body, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['visibility'],
+      });
+
+      const timeoutId = setTimeout(() => finish(findCandidate()), maxWait);
+    });
+  }
+
   // Scrape transcript from DOM (content script can access DOM directly)
   async function scrapeTranscriptFromDOM() {
-    let hiddenStyle = null;
+    let restoreHiddenPanel = null;
+    let openedTranscriptPanel = false;
 
     try {
       // Find transcript button (structural selector, language-agnostic)
       const transcriptBtn = document.querySelector('ytd-video-description-transcript-section-renderer button');
       if (!transcriptBtn) return [];
 
-      // Hide both transcript panel variants with opacity and position:fixed to avoid layout shift
-      // (visibility:hidden prevents innerText rendering, so we use opacity instead)
-      hiddenStyle = document.createElement('style');
-      hiddenStyle.textContent = `
-        ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"],
-        ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"] {
-          opacity: 0 !important; pointer-events: none !important;
-          position: fixed !important; top: 0 !important; left: 0 !important;
-        }`;
-      document.head.appendChild(hiddenStyle);
+      const panelVisibilityBeforeOpen = snapshotPanelVisibility();
+      const transcriptPanelBeforeOpen = findExpandedTranscriptPanel();
 
-      transcriptBtn.click();
+      if (!transcriptPanelBeforeOpen) {
+        const expandedPanelPromise = waitForPanelToExpand(panelVisibilityBeforeOpen, 5000);
+        transcriptBtn.click();
+        openedTranscriptPanel = true;
 
-      // Poll for a transcript panel to open (up to 5s). YouTube now serves
-      // a modern transcript wrapper without a stable target-id on some videos,
-      // so we detect by transcript-specific child elements rather than panel id.
-      let transcriptPanel = null;
+        const newlyExpandedPanel = await expandedPanelPromise;
+        if (newlyExpandedPanel) {
+          restoreHiddenPanel = hidePanelForScraping(newlyExpandedPanel);
+        }
+      }
+
+      // Poll for a transcript panel to open (up to 5s). Prefer the panel that
+      // became expanded after the click, then fall back to transcript-specific
+      // descendants if YouTube reuses an already-expanded wrapper.
+      let transcriptPanel = transcriptPanelBeforeOpen;
       const panelWaitStart = Date.now();
       while (Date.now() - panelWaitStart < 5000) {
-        transcriptPanel = findExpandedTranscriptPanel();
+        transcriptPanel = transcriptPanel
+          || findNewlyExpandedTranscriptPanel(panelVisibilityBeforeOpen)
+          || findExpandedTranscriptPanel();
         if (transcriptPanel) break;
         await new Promise(r => setTimeout(r, 300));
       }
@@ -785,6 +887,9 @@
 
       let transcriptCues = [];
       const { panel: openPanel, kind } = transcriptPanel;
+      if (openedTranscriptPanel && !restoreHiddenPanel) {
+        restoreHiddenPanel = hidePanelForScraping(openPanel);
+      }
 
       if (kind === 'modern') {
         transcriptCues = await scrapeModernTranscriptUI(openPanel);
@@ -793,7 +898,7 @@
       }
 
       // Close whichever panel was opened
-      if (openPanel) {
+      if (openedTranscriptPanel && openPanel) {
         const closeBtn = openPanel.querySelector('#visibility-button button');
         if (closeBtn) {
           closeBtn.click();
@@ -803,8 +908,8 @@
 
       return transcriptCues;
     } finally {
-      // Always clean up hidden style
-      if (hiddenStyle) hiddenStyle.remove();
+      // Always clean up temporary hiding
+      if (restoreHiddenPanel) restoreHiddenPanel();
     }
   }
 

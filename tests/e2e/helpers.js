@@ -563,6 +563,9 @@ async function injectMockSubtitles(driver) {
       {word: "sleep", time: 120000}, {word: "brain", time: 120200},
       {word: "neurons", time: 180000}, {word: "dreaming", time: 180200},
     ];
+    Utilities.getSubtitles = async function() {
+      return mockWords;
+    };
     const origSearch = Utilities.searchSubtitles.bind(Utilities);
     Utilities.searchSubtitles = function(value, _subtitles) {
       return origSearch(value, mockWords);

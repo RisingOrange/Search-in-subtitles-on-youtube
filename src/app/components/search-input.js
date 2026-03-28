@@ -1,6 +1,23 @@
 async function SearchInput() {
   let SUGGESTIONS_INDEX = -1;
-  const SUBTITLES = await Utilities.getSubtitles();
+  let subtitles = null;
+  let subtitlesPromise = null;
+  let searchRequestId = 0;
+
+  async function ensureSubtitles() {
+    if (subtitles) {
+      return subtitles;
+    }
+
+    if (!subtitlesPromise) {
+      subtitlesPromise = Utilities.getSubtitles().then((result) => {
+        subtitles = result;
+        return subtitles;
+      });
+    }
+
+    return subtitlesPromise;
+  }
 
   function renderAutoCompleteItem(item) {
     return li({ onClick: () => handleAutoCompleteItemClick(item) }, [
@@ -50,7 +67,7 @@ async function SearchInput() {
     return result;
   }
 
-  function handleKeyUp(event) {
+  async function handleKeyUp(event) {
     let result = false;
     switch (event.keyCode) {
       case 38:
@@ -86,6 +103,7 @@ async function SearchInput() {
     }
 
     SUGGESTIONS_INDEX = -1;
+    const requestId = ++searchRequestId;
     while ($refs.dropdown.firstChild) {
       $refs.dropdown.removeChild($refs.dropdown.firstChild);
     }
@@ -96,7 +114,17 @@ async function SearchInput() {
       return;
     }
 
-    const searchResults = Utilities.searchSubtitles(value, SUBTITLES);
+    const loadedSubtitles = await ensureSubtitles();
+
+    if (requestId !== searchRequestId) {
+      return;
+    }
+
+    if (($refs.search_input.value || "").toLowerCase() !== value) {
+      return;
+    }
+
+    const searchResults = Utilities.searchSubtitles(value, loadedSubtitles);
 
     $refs.dropdown.appendChild(
       DropDownList({
