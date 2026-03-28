@@ -701,6 +701,54 @@
     return cues;
   }
 
+  function isExpandedPanel(panel) {
+    return panel?.getAttribute('visibility') === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED';
+  }
+
+  function getTranscriptPanelKind(panel) {
+    if (!panel) return null;
+
+    if (
+      panel.querySelector('transcript-segment-view-model')
+      || panel.querySelector('ytd-transcript-search-panel-renderer')
+      || panel.getAttribute('target-id') === 'PAmodern_transcript_view'
+    ) {
+      return 'modern';
+    }
+
+    if (
+      panel.querySelector('ytd-transcript-segment-renderer')
+      || panel.querySelector('ytd-transcript-renderer')
+      || panel.getAttribute('target-id') === 'engagement-panel-searchable-transcript'
+    ) {
+      return 'old';
+    }
+
+    return null;
+  }
+
+  function findExpandedTranscriptPanel() {
+    const expandedPanels = Array.from(document.querySelectorAll('ytd-engagement-panel-section-list-renderer'))
+      .filter(isExpandedPanel);
+
+    let bestMatch = null;
+
+    for (const panel of expandedPanels) {
+      const kind = getTranscriptPanelKind(panel);
+      if (!kind) continue;
+
+      if (panel.querySelector('transcript-segment-view-model, ytd-transcript-segment-renderer')) {
+        return { panel, kind };
+      }
+
+      if (!bestMatch) {
+        bestMatch = { panel, kind };
+      }
+    }
+
+    return bestMatch;
+  }
+
   // Scrape transcript from DOM (content script can access DOM directly)
   async function scrapeTranscriptFromDOM() {
     let hiddenStyle = null;
@@ -723,23 +771,22 @@
 
       transcriptBtn.click();
 
-      // Poll for either transcript panel to open (up to 5s)
-      const expandedSelector =
-        'ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"],'
-        + 'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"]';
-      let openPanel = null;
+      // Poll for a transcript panel to open (up to 5s). YouTube now serves
+      // a modern transcript wrapper without a stable target-id on some videos,
+      // so we detect by transcript-specific child elements rather than panel id.
+      let transcriptPanel = null;
       const panelWaitStart = Date.now();
       while (Date.now() - panelWaitStart < 5000) {
-        openPanel = document.querySelector(expandedSelector);
-        if (openPanel) break;
+        transcriptPanel = findExpandedTranscriptPanel();
+        if (transcriptPanel) break;
         await new Promise(r => setTimeout(r, 300));
       }
-      if (!openPanel) return [];
+      if (!transcriptPanel) return [];
 
       let transcriptCues = [];
-      const isModern = openPanel.getAttribute('target-id') === 'PAmodern_transcript_view';
+      const { panel: openPanel, kind } = transcriptPanel;
 
-      if (isModern) {
+      if (kind === 'modern') {
         transcriptCues = await scrapeModernTranscriptUI(openPanel);
       } else {
         transcriptCues = await scrapeOldTranscriptUI(openPanel);

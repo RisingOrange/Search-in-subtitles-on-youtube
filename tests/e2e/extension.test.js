@@ -219,9 +219,10 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
   });
 });
 
-// YouTube has two transcript panel UIs:
-// - Old: engagement-panel-searchable-transcript with ytd-transcript-segment-renderer elements
-// - Modern: PAmodern_transcript_view with transcript-segment-view-model elements
+// YouTube has two transcript segment UIs:
+// - Old: ytd-transcript-segment-renderer elements in the legacy transcript panel
+// - Modern: transcript-segment-view-model elements, sometimes wrapped in
+//   PAmodern_transcript_view and sometimes in an expanded panel with no target-id
 //
 // The tests above (first suite) use mock subtitles and test the extension's UI plumbing
 // (button injection, iframe, search, seek, copy menu) — they don't exercise real scraping.
@@ -230,7 +231,7 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
 // old panel) reliably renders content in headless Firefox. It verifies the extension's
 // selectors (.ytwTranscriptSegmentViewModelTimestamp, span.yt-core-attributed-string) can
 // extract timestamps and text from the actual YouTube DOM.
-describe("Modern Transcript UI (PAmodern_transcript_view)", { timeout: 120000 }, () => {
+describe("Modern Transcript UI", { timeout: 120000 }, () => {
   let driver;
   let botBlocked = false;
 
@@ -262,9 +263,8 @@ describe("Modern Transcript UI (PAmodern_transcript_view)", { timeout: 120000 },
   // 3. Verifying transcript-segment-view-model elements render with timestamps + text
   // 4. Scraping using the same CSS selectors the extension uses
   //
-  // Asserts that the modern panel (PAmodern_transcript_view) is used.
-  // If YouTube changes which UI this video gets, the test will fail with
-  // a clear message — pick a different video that uses the modern UI.
+  // Asserts that the modern transcript segment UI is used, regardless of the
+  // specific wrapper panel target-id that YouTube serves for that video.
   it("should scrape transcript cues from the modern transcript panel", async (t) => {
     skipIfBotBlocked(t);
     try {
@@ -298,14 +298,15 @@ describe("Modern Transcript UI (PAmodern_transcript_view)", { timeout: 120000 },
             btn.click();
             await new Promise(r => setTimeout(r, 3000));
 
-            // Check which panel opened — modern or old
-            const modernPanel = document.querySelector(
-              'ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"]'
+            const expandedPanels = [...document.querySelectorAll('ytd-engagement-panel-section-list-renderer')]
+              .filter((panel) => panel.getAttribute('visibility') === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED');
+
+            const panel = expandedPanels.find((candidate) =>
+              candidate.querySelector('transcript-segment-view-model, ytd-transcript-segment-renderer')
+              || candidate.querySelector('ytd-transcript-search-panel-renderer, ytd-transcript-renderer')
+              || candidate.getAttribute('target-id') === 'PAmodern_transcript_view'
+              || candidate.getAttribute('target-id') === 'engagement-panel-searchable-transcript'
             );
-            const oldPanel = document.querySelector(
-              'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"]'
-            );
-            const panel = modernPanel || oldPanel;
             if (!panel) {
               // Collect diagnostics about all panels
               const allPanels = [...document.querySelectorAll('ytd-engagement-panel-section-list-renderer')].map(p => ({
@@ -315,7 +316,11 @@ describe("Modern Transcript UI (PAmodern_transcript_view)", { timeout: 120000 },
               resolve({ error: 'no transcript panel opened. Panels: ' + JSON.stringify(allPanels) });
               return;
             }
-            const panelType = modernPanel ? 'modern' : 'old';
+            const panelType = panel.querySelector('transcript-segment-view-model')
+              || panel.getAttribute('target-id') === 'PAmodern_transcript_view'
+              || panel.querySelector('ytd-transcript-search-panel-renderer')
+              ? 'modern'
+              : 'old';
 
             // Wait for segments to appear (up to 8s)
             const segSelector = panelType === 'modern'
@@ -379,7 +384,7 @@ describe("Modern Transcript UI (PAmodern_transcript_view)", { timeout: 120000 },
       assert.ok(!result.error, `Scraping failed: ${result.error}`);
       assert.strictEqual(
         result.panelType, "modern",
-        `Expected modern transcript panel but got "${result.panelType}" — YouTube may have changed which UI this video uses`
+        `Expected modern transcript segments but got "${result.panelType}" — YouTube may have changed which UI this video uses`
       );
       assert.ok(result.count > 0, `Should have scraped cues, got ${result.count}`);
       assert.ok(result.first.time, `First cue should have a timestamp, got: "${result.first.time}"`);
