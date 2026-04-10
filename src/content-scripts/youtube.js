@@ -619,6 +619,29 @@
     return 0;
   }
 
+  function getElementText(el) {
+    return (el?.innerText || el?.textContent || '').trim();
+  }
+
+  function getModernSegmentText(seg) {
+    const txtEl = seg.querySelector(
+      'span.yt-core-attributed-string, span.ytAttributedStringHost, span[role="text"]'
+    );
+    const directText = getElementText(txtEl);
+    if (directText) return directText;
+
+    const lines = getElementText(seg).split(/[\n\r]+/).map(line => line.trim()).filter(Boolean);
+    if (lines.length === 0) return '';
+
+    const textLines = lines.filter((line, index) => {
+      if (index === 0 && /^\d+:\d+(?::\d+)?$/.test(line)) return false;
+      if (/^\d+\s+(?:second|seconds|minute|minutes|hour|hours)$/.test(line)) return false;
+      return true;
+    });
+
+    return textLines.join(' ').trim();
+  }
+
   // Scrape transcript segments from the old UI (engagement-panel-searchable-transcript)
   // Uses ytd-transcript-segment-renderer elements inside ytd-transcript-renderer.
   async function scrapeOldTranscriptUI(transcriptPanel) {
@@ -683,17 +706,15 @@
     // Wait for text to hydrate — YouTube may render empty shells first
     const start = Date.now();
     while (Date.now() - start < 5000) {
-      const txt = segments[0].querySelector('span.yt-core-attributed-string');
-      if (txt && txt.innerText && txt.innerText.trim()) break;
+      if (getModernSegmentText(segments[0])) break;
       await new Promise(r => setTimeout(r, 200));
     }
 
     for (const seg of segments) {
       const tsEl = seg.querySelector('.ytwTranscriptSegmentViewModelTimestamp');
-      const txtEl = seg.querySelector('span.yt-core-attributed-string');
 
-      const timeText = tsEl ? tsEl.innerText.trim() : '';
-      const text = txtEl ? txtEl.innerText.trim() : '';
+      const timeText = getElementText(tsEl);
+      const text = getModernSegmentText(seg);
 
       if (text) cues.push({ startMs: parseTimestamp(timeText), text });
     }

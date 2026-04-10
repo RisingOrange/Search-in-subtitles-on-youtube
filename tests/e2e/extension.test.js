@@ -405,8 +405,8 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
 //
 // This suite tests real DOM scraping against the modern transcript panel, which (unlike the
 // old panel) reliably renders content in headless Firefox. It verifies the extension's
-// selectors (.ytwTranscriptSegmentViewModelTimestamp, span.yt-core-attributed-string) can
-// extract timestamps and text from the actual YouTube DOM.
+// selectors (.ytwTranscriptSegmentViewModelTimestamp plus YouTube's attributed-string
+// text spans) can extract timestamps and text from the actual YouTube DOM.
 describe("Modern Transcript UI", { timeout: 120000 }, () => {
   let driver;
   let botBlocked = false;
@@ -497,6 +497,25 @@ describe("Modern Transcript UI", { timeout: 120000 }, () => {
               || panel.querySelector('ytd-transcript-search-panel-renderer')
               ? 'modern'
               : 'old';
+            const getElementText = (el) => (el?.innerText || el?.textContent || '').trim();
+            const getModernSegmentText = (seg) => {
+              const txtEl = seg.querySelector(
+                'span.yt-core-attributed-string, span.ytAttributedStringHost, span[role="text"]'
+              );
+              const directText = getElementText(txtEl);
+              if (directText) return directText;
+
+              const lines = getElementText(seg).split(/[\\n\\r]+/).map(line => line.trim()).filter(Boolean);
+              if (lines.length === 0) return '';
+
+              const textLines = lines.filter((line, index) => {
+                if (index === 0 && /^\\d+:\\d+(?::\\d+)?$/.test(line)) return false;
+                if (/^\\d+\\s+(?:second|seconds|minute|minutes|hour|hours)$/.test(line)) return false;
+                return true;
+              });
+
+              return textLines.join(' ').trim();
+            };
 
             // Wait for segments to appear (up to 8s)
             const segSelector = panelType === 'modern'
@@ -517,12 +536,14 @@ describe("Modern Transcript UI", { timeout: 120000 }, () => {
 
             // Wait for text to hydrate (same as production code)
             const textSelector = panelType === 'modern'
-              ? 'span.yt-core-attributed-string'
+              ? 'span.yt-core-attributed-string, span.ytAttributedStringHost, span[role="text"]'
               : '.segment-text, [class*="text"], yt-formatted-string';
             const hydrateStart = Date.now();
             while (Date.now() - hydrateStart < 5000) {
-              const txt = segments[0].querySelector(textSelector);
-              if (txt && txt.innerText && txt.innerText.trim()) break;
+              const text = panelType === 'modern'
+                ? getModernSegmentText(segments[0])
+                : getElementText(segments[0].querySelector(textSelector));
+              if (text) break;
               await new Promise(r => setTimeout(r, 200));
             }
 
@@ -531,9 +552,8 @@ describe("Modern Transcript UI", { timeout: 120000 }, () => {
             if (panelType === 'modern') {
               for (const seg of segments) {
                 const tsEl = seg.querySelector('.ytwTranscriptSegmentViewModelTimestamp');
-                const txtEl = seg.querySelector('span.yt-core-attributed-string');
-                const timeText = tsEl ? tsEl.innerText.trim() : '';
-                const text = txtEl ? txtEl.innerText.trim() : '';
+                const timeText = getElementText(tsEl);
+                const text = getModernSegmentText(seg);
                 if (text) cues.push({ time: timeText, text: text.substring(0, 80) });
               }
             } else {

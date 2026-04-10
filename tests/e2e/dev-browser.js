@@ -25,8 +25,11 @@ async function main() {
 
   // Keep process alive until interrupted
   await new Promise((resolve) => {
+    const keepAlive = setInterval(() => {}, 1000);
     process.on("SIGINT", resolve);
     process.on("SIGTERM", resolve);
+    process.on("SIGINT", () => clearInterval(keepAlive));
+    process.on("SIGTERM", () => clearInterval(keepAlive));
   });
 
   await driver.quit().catch(() => {});
