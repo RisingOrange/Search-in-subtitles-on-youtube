@@ -184,13 +184,37 @@ async function detectBotChallenge(driver) {
   return false;
 }
 
+function isNavigationTimeout(err) {
+  return err && (err.name === "TimeoutError" || err.name === "ScriptTimeoutError");
+}
+
+async function navigateWithRetry(driver, url) {
+  try {
+    await driver.get(url);
+    return true;
+  } catch (err) {
+    if (!isNavigationTimeout(err)) throw err;
+    console.warn(`navigateWithRetry: navigation to ${url} timed out, retrying once`);
+    try {
+      await driver.get(url);
+      return true;
+    } catch (err2) {
+      if (!isNavigationTimeout(err2)) throw err2;
+      console.warn(`navigateWithRetry: retry to ${url} also timed out — tests will be skipped`);
+      driver._navigationTimedOut = true;
+      return false;
+    }
+  }
+}
+
 /**
  * Navigate to a YouTube video and handle interstitials.
  * Sets driver._botChallengeDetected = true if YouTube shows a bot gate.
+ * Sets driver._navigationTimedOut = true if YouTube fails to load after a retry.
  */
 async function openYouTubeVideo(driver, url) {
   // Set consent cookie before navigating to suppress GDPR dialogs
-  await driver.get("https://www.youtube.com");
+  if (!(await navigateWithRetry(driver, "https://www.youtube.com"))) return;
   await driver.manage().addCookie({
     name: "CONSENT",
     value: "YES+cb.20210328-17-p0.en+FX+684",
@@ -205,7 +229,7 @@ async function openYouTubeVideo(driver, url) {
     path: "/",
   });
 
-  await driver.get(url);
+  if (!(await navigateWithRetry(driver, url))) return;
 
   // Handle consent redirects (consent.youtube.com)
   await handleConsentInterstitial(driver);

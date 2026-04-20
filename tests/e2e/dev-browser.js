@@ -20,6 +20,9 @@ async function main() {
   if (driver._botChallengeDetected) {
     console.warn("YouTube bot challenge detected — page may not work properly");
   }
+  if (driver._navigationTimedOut) {
+    console.warn("YouTube navigation timed out — page may not work properly");
+  }
 
   console.log("Browser ready. Press Ctrl+C to close.");
 

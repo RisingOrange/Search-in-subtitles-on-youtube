@@ -17,11 +17,11 @@ const {
 
 describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
   let driver;
-  let botBlocked = false;
+  let skipReason = null;
 
   function skipIfBotBlocked(ctx) {
-    if (botBlocked) {
-      ctx.skip("YouTube bot challenge detected — skipping (not an extension bug)");
+    if (skipReason) {
+      ctx.skip(`${skipReason} — skipping (not an extension bug)`);
     }
   }
 
@@ -105,8 +105,11 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     driver = await launchFirefoxWithExtension(extensionPath);
     await openYouTubeVideo(driver, TEST_VIDEO.url);
     if (driver._botChallengeDetected) {
-      botBlocked = true;
+      skipReason = "YouTube bot challenge detected";
       await saveDiagnostics(driver, "00-bot-challenge-primary");
+    } else if (driver._navigationTimedOut) {
+      skipReason = "YouTube navigation timed out";
+      await saveDiagnostics(driver, "00-navigation-timeout-primary");
     }
   });
 
@@ -409,11 +412,11 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
 // text spans) can extract timestamps and text from the actual YouTube DOM.
 describe("Modern Transcript UI", { timeout: 120000 }, () => {
   let driver;
-  let botBlocked = false;
+  let skipReason = null;
 
   function skipIfBotBlocked(ctx) {
-    if (botBlocked) {
-      ctx.skip("YouTube bot challenge detected — skipping (not an extension bug)");
+    if (skipReason) {
+      ctx.skip(`${skipReason} — skipping (not an extension bug)`);
     }
   }
 
@@ -422,8 +425,11 @@ describe("Modern Transcript UI", { timeout: 120000 }, () => {
     driver = await launchFirefoxWithExtension(extensionPath);
     await openYouTubeVideo(driver, TEST_VIDEO_MODERN_UI.url);
     if (driver._botChallengeDetected) {
-      botBlocked = true;
+      skipReason = "YouTube bot challenge detected";
       await saveDiagnostics(driver, "10-bot-challenge-modern");
+    } else if (driver._navigationTimedOut) {
+      skipReason = "YouTube navigation timed out";
+      await saveDiagnostics(driver, "10-navigation-timeout-modern");
     }
   });
 
