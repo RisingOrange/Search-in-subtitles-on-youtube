@@ -24,7 +24,11 @@ const GECKODRIVER_VERSION = "0.36.0";
 let geckodriverPathPromise = null;
 function ensureGeckodriver() {
   if (!geckodriverPathPromise) {
-    geckodriverPathPromise = downloadAndVerifyGeckodriver();
+    geckodriverPathPromise = downloadAndVerifyGeckodriver().catch((e) => {
+      // Don't cache the failure — let the next launch attempt a fresh download.
+      geckodriverPathPromise = null;
+      throw e;
+    });
   }
   return geckodriverPathPromise;
 }

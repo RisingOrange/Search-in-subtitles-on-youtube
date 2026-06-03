@@ -10,6 +10,7 @@
     TRANSCRIPT_STATE: "idle", // idle | loading | ready | error
     TRANSCRIPT_CACHE: null,   // { videoId: string, cues: array }
     CURRENT_VIDEO_ID: null,
+    IFRAME_VIDEO_ID: null, // video the search iframe was last built for
   };
 
   const helpers = {
@@ -975,10 +976,13 @@
 
     // Keep the existing iframe (and its open/closed state) on same-video URL
     // rewrites — YouTube often normalizes query params in place, and
-    // replacing the iframe would reset the search UI.
+    // replacing the iframe would reset the search UI. Compare against the
+    // video the iframe was actually built for (not videoChanged): when a
+    // video change hits the controls-not-ready retry path, CURRENT_VIDEO_ID
+    // is already updated but the iframe still belongs to the previous video.
     const keepIframe =
-      !videoChanged &&
       helpers.isVideoURL(url) &&
+      newVideoId === state.IFRAME_VIDEO_ID &&
       !!document.getElementById(state.IFRAME_ID);
     if (!keepIframe) {
       state.SEARCH_BOX_VISIBILITY = false;
@@ -1017,6 +1021,7 @@
       chrome.runtime.getURL("src/app/index.html") +
       "?url=" +
       encodeURIComponent(url);
+    state.IFRAME_VIDEO_ID = helpers.getVideoId();
 
     if (!document.getElementById(state.IFRAME_ID)) {
       state.YOUTUBE_PLAYER.appendChild(state.SEARCH_IFRAME);
