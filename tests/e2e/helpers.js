@@ -24,18 +24,35 @@ const GECKODRIVER_VERSION = "0.36.0";
 let geckodriverPathPromise = null;
 function ensureGeckodriver() {
   if (!geckodriverPathPromise) {
-    // download() returns any binary already present in cacheDir without
-    // checking its version, so scope the cache dir by version to make the
-    // pin effective.
-    const cacheDir = path.join(
-      PROJECT_ROOT,
-      "dist",
-      "geckodriver",
-      GECKODRIVER_VERSION
-    );
-    geckodriverPathPromise = downloadGeckodriver(GECKODRIVER_VERSION, cacheDir);
+    geckodriverPathPromise = downloadAndVerifyGeckodriver();
   }
   return geckodriverPathPromise;
+}
+
+async function downloadAndVerifyGeckodriver() {
+  // download() returns any binary already present in cacheDir without
+  // checking its version, so scope the cache dir by version to make the
+  // pin effective.
+  const cacheDir = path.join(
+    PROJECT_ROOT,
+    "dist",
+    "geckodriver",
+    GECKODRIVER_VERSION
+  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const binaryPath = await downloadGeckodriver(GECKODRIVER_VERSION, cacheDir);
+    try {
+      // A failed/partial earlier download leaves a corrupt binary that
+      // download() would happily keep returning — verify before using it.
+      execSync(`"${binaryPath}" --version`, { stdio: "pipe" });
+      return binaryPath;
+    } catch {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  }
+  throw new Error(
+    `geckodriver ${GECKODRIVER_VERSION} binary failed verification after re-download`
+  );
 }
 
 // TED-Ed: "The benefits of a good night's sleep" — has creator-provided English captions.
@@ -50,6 +67,10 @@ const TEST_VIDEO_MODERN_UI = {
   url: "https://www.youtube.com/watch?v=nve6PtFJeo4&hl=en&gl=US",
   searchTerm: "claude",
 };
+
+// The three-dot ("More actions") button below the video.
+const VIDEO_MENU_BUTTON_SELECTOR =
+  "#actions ytd-menu-renderer > yt-button-shape#button-shape button";
 
 /**
  * Build the extension zip using web-ext.
@@ -713,24 +734,56 @@ async function injectCopyTranscriptMenuItem(driver) {
  * callers should skip hydration-dependent tests on false (not an extension
  * bug).
  */
-async function ensureWatchPageHydrated(driver, { timeoutMs = 15000, reloads = 1 } = {}) {
+async function ensureWatchPageHydrated(driver) {
+  // Deliberately checks broad hydration markers (title + any action button)
+  // rather than the specific menu-button selector the extension uses — if
+  // YouTube changes that markup on an otherwise hydrated page, the dependent
+  // tests should fail (exposing the regression), not skip.
   const isHydrated = () =>
     driver.executeScript(`
       const title = document.querySelector('ytd-watch-metadata #title h1 yt-formatted-string');
-      const menuBtn = document.querySelector('#actions ytd-menu-renderer > yt-button-shape#button-shape button');
-      return !!(title && title.innerText.trim() && menuBtn);
+      const actionButton = document.querySelector('ytd-watch-metadata #actions button');
+      return !!(title && title.innerText.trim() && actionButton);
     `);
 
-  for (let attempt = 0; attempt <= reloads; attempt++) {
+  // One initial wait plus one reload retry.
+  for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) {
       await driver.navigate().refresh();
     }
     try {
-      await driver.wait(isHydrated, timeoutMs);
+      await driver.wait(isHydrated, 15000);
       return true;
     } catch {
       // Timed out — fall through to reload and retry.
     }
+  }
+  return false;
+}
+
+/**
+ * Open the three-dot ("More actions") menu below the video and wait for its
+ * popup to populate. YouTube re-renders the button and can swallow clicks,
+ * so re-query and retry a few times. Returns true when the popup is open
+ * with menu items.
+ */
+async function openVideoMenu(driver) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const menuBtn = await waitForElement(driver, VIDEO_MENU_BUTTON_SELECTOR, 10000);
+    await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
+    await driver.sleep(500);
+    await menuBtn.click();
+    const popupOpen = await driver
+      .wait(async () => {
+        return driver.executeScript(`
+          const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
+          if (!dropdown || dropdown.style.display === 'none') return false;
+          const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
+          return items.length > 0;
+        `);
+      }, 5000)
+      .catch(() => false);
+    if (popupOpen) return true;
   }
   return false;
 }
@@ -753,4 +806,5 @@ module.exports = {
   searchInIframe,
   injectCopyTranscriptMenuItem,
   ensureWatchPageHydrated,
+  openVideoMenu,
 };

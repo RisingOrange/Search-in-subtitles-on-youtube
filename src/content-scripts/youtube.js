@@ -963,9 +963,6 @@
   }
 
   function setup(url) {
-    state.SEARCH_BOX_VISIBILITY = false;
-    state.MOUSE_OVER_FRAME = false;
-
     // Reset transcript state when video changes
     const newVideoId = helpers.getVideoId();
     const videoChanged = newVideoId !== state.CURRENT_VIDEO_ID;
@@ -975,6 +972,18 @@
       state.TRANSCRIPT_CACHE = null;
     }
     copyTranscript.cleanup();
+
+    // Keep the existing iframe (and its open/closed state) on same-video URL
+    // rewrites — YouTube often normalizes query params in place, and
+    // replacing the iframe would reset the search UI.
+    const keepIframe =
+      !videoChanged &&
+      helpers.isVideoURL(url) &&
+      !!document.getElementById(state.IFRAME_ID);
+    if (!keepIframe) {
+      state.SEARCH_BOX_VISIBILITY = false;
+      state.MOUSE_OVER_FRAME = false;
+    }
 
     if (!helpers.isVideoURL(url)) {
       return;
@@ -991,10 +1000,8 @@
       state.YOUTUBE_PLAYER &&
       state.YOUTUBE_PLAYER.querySelector(".ytp-right-controls");
     if (state.YOUTUBE_PLAYER && rightControls) {
-      addOrUpdateSearchButton();
-      // Keep the existing iframe on same-video URL rewrites (YouTube often
-      // normalizes query params in place) — replacing it resets the search UI.
-      if (videoChanged || !document.getElementById(state.IFRAME_ID)) {
+      addOrUpdateSearchButton(rightControls);
+      if (!keepIframe) {
         addOrUpdateSearchInput(url);
       }
       copyTranscript.setupPopupObserver();
@@ -1018,25 +1025,23 @@
     }
   }
 
-  function addOrUpdateSearchButton() {
+  function addOrUpdateSearchButton(rightControls) {
+    // render.searchButton() returns the existing button when one is present.
     state.YOUTUBE_PLAYER_SEARCH_BUTTON = render.searchButton();
-    if (!document.getElementById("subtitle-search-button")) {
-      const rightControls = state.YOUTUBE_PLAYER.querySelector(
-        ".ytp-right-controls",
-      );
-      // YouTube's newer player layouts nest the buttons in wrapper divs;
-      // a button placed directly in .ytp-right-controls stays invisible there.
-      state.YOUTUBE_RIGHT_CONTROLS =
-        rightControls.querySelector(".ytp-right-controls-left") ||
-        rightControls;
+    // YouTube's newer player layouts nest the buttons in wrapper divs; a
+    // button placed directly in .ytp-right-controls stays invisible there.
+    // The wrapper can render after the controls bar, so re-check the intended
+    // parent on every call and (re)insert the button when it isn't there yet.
+    state.YOUTUBE_RIGHT_CONTROLS =
+      rightControls.querySelector(".ytp-right-controls-left") || rightControls;
+    if (
+      state.YOUTUBE_PLAYER_SEARCH_BUTTON.parentElement !==
+      state.YOUTUBE_RIGHT_CONTROLS
+    ) {
       state.YOUTUBE_RIGHT_CONTROLS.insertBefore(
         state.YOUTUBE_PLAYER_SEARCH_BUTTON,
         state.YOUTUBE_RIGHT_CONTROLS.firstChild,
       );
-    } else {
-      document
-        .getElementById("subtitle-search-button")
-        .replaceWith(state.YOUTUBE_PLAYER_SEARCH_BUTTON);
     }
   }
 

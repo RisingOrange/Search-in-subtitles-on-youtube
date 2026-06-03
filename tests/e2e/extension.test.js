@@ -14,6 +14,7 @@ const {
   searchInIframe,
   injectCopyTranscriptMenuItem,
   ensureWatchPageHydrated,
+  openVideoMenu,
 } = require("./helpers");
 
 describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
@@ -300,30 +301,7 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
       `);
       await driver.sleep(300);
 
-      // Open the three-dot (more actions) menu below the video and wait for
-      // it to populate. YouTube re-renders the button and can swallow clicks,
-      // so re-query and retry a few times.
-      let popupOpen = false;
-      for (let attempt = 0; attempt < 3 && !popupOpen; attempt++) {
-        const menuBtn = await waitForElement(
-          driver,
-          "#actions ytd-menu-renderer > yt-button-shape#button-shape button",
-          10000
-        );
-        await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
-        await driver.sleep(500);
-        await menuBtn.click();
-        popupOpen = await driver
-          .wait(async () => {
-            return driver.executeScript(`
-              const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
-              if (!dropdown || dropdown.style.display === 'none') return false;
-              const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
-              return items.length > 0;
-            `);
-          }, 5000)
-          .catch(() => false);
-      }
+      const popupOpen = await openVideoMenu(driver);
 
       // The extension's auto-injection relies on _isVideoMenuClick flag which
       // may not be set if YouTube re-rendered the button after setupMenuClickFlag.
@@ -386,29 +364,7 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
         `Expected transcript panel to be open before copying, got: ${JSON.stringify(transcriptStateBefore)}`
       );
 
-      // Open the three-dot menu and wait for it to populate. YouTube
-      // re-renders the button and can swallow clicks, so retry a few times.
-      let popupOpen = false;
-      for (let attempt = 0; attempt < 3 && !popupOpen; attempt++) {
-        const menuBtn = await waitForElement(
-          driver,
-          "#actions ytd-menu-renderer > yt-button-shape#button-shape button",
-          10000
-        );
-        await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
-        await driver.sleep(500);
-        await menuBtn.click();
-        popupOpen = await driver
-          .wait(async () => {
-            return driver.executeScript(`
-              const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
-              if (!dropdown || dropdown.style.display === 'none') return false;
-              const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
-              return items.length > 0;
-            `);
-          }, 5000)
-          .catch(() => false);
-      }
+      await openVideoMenu(driver);
 
       const autoInjected = await driver.executeScript(
         "return !!document.querySelector('#yt-copy-transcript-item')"
