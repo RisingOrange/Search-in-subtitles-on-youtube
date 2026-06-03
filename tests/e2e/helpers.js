@@ -1,7 +1,7 @@
 const { execSync } = require("child_process");
 const { Builder, By, until } = require("selenium-webdriver");
 const firefox = require("selenium-webdriver/firefox");
-const geckodriver = require("geckodriver");
+const { download: downloadGeckodriver } = require("geckodriver");
 const fs = require("fs");
 const path = require("path");
 
@@ -13,6 +13,30 @@ const ADBLOCKER_XPI_PATH = path.join(ADBLOCKER_CACHE_DIR, "adblocker-ultimate-la
 const ADBLOCKER_DOWNLOAD_URL =
   process.env.ADBLOCKER_ULTIMATE_URL ||
   "https://addons.mozilla.org/firefox/downloads/latest/adblocker-ultimate/addon-494908-latest.xpi";
+
+// Pinned geckodriver version. geckodriver 0.37.0 (2026-06-03) has a regression
+// where installAddon() reports success but content scripts of the installed
+// add-on never run, so every injection-dependent test fails. The previous code
+// passed `geckodriver.path` (undefined in geckodriver@4.x) to ServiceBuilder,
+// which made Selenium Manager silently download and use the latest geckodriver.
+const GECKODRIVER_VERSION = "0.36.0";
+
+let geckodriverPathPromise = null;
+function ensureGeckodriver() {
+  if (!geckodriverPathPromise) {
+    // download() returns any binary already present in cacheDir without
+    // checking its version, so scope the cache dir by version to make the
+    // pin effective.
+    const cacheDir = path.join(
+      PROJECT_ROOT,
+      "dist",
+      "geckodriver",
+      GECKODRIVER_VERSION
+    );
+    geckodriverPathPromise = downloadGeckodriver(GECKODRIVER_VERSION, cacheDir);
+  }
+  return geckodriverPathPromise;
+}
 
 // TED-Ed: "The benefits of a good night's sleep" — has creator-provided English captions.
 // Uses old transcript UI (engagement-panel-searchable-transcript with ytd-transcript-segment-renderer).
@@ -76,7 +100,7 @@ function ensureAdblockerUltimateXpi() {
 
 async function launchFirefoxWithExtension(extensionPath) {
   const options = new firefox.Options();
-  const service = new firefox.ServiceBuilder(geckodriver.path);
+  const service = new firefox.ServiceBuilder(await ensureGeckodriver());
   // Allow running with a visible browser via E2E_HEADED=1 (useful for local debugging)
   if (process.env.E2E_HEADED !== "1") {
     options.addArguments("-headless");
@@ -601,30 +625,44 @@ async function injectMockSubtitles(driver) {
  * Switch into the extension iframe, inject mock subtitles, type a search term,
  * and wait for results to appear. Returns the list of result elements.
  * Caller is responsible for switching back to main page afterwards.
+ *
+ * Retries once when the iframe's browsing context gets discarded mid-search —
+ * YouTube occasionally re-renders the player subtree (e.g. ad transitions),
+ * which destroys and re-creates the extension iframe.
  */
-async function searchInIframe(driver, searchTerm) {
-  await switchToMainPage(driver);
-  await switchToExtensionIframe(driver);
+async function searchInIframe(driver, searchTerm, { retries = 1 } = {}) {
+  try {
+    await switchToMainPage(driver);
+    await switchToExtensionIframe(driver);
 
-  const input = await waitForElement(
-    driver,
-    'input[placeholder="Search in video..."]',
-    30000
-  );
+    const input = await waitForElement(
+      driver,
+      'input[placeholder="Search in video..."]',
+      30000
+    );
 
-  await injectMockSubtitles(driver);
+    await injectMockSubtitles(driver);
 
-  await input.clear();
-  await input.sendKeys(searchTerm);
+    await input.clear();
+    await input.sendKeys(searchTerm);
 
-  await driver.sleep(1000);
+    await driver.sleep(1000);
 
-  const results = await driver.wait(async () => {
-    const items = await driver.findElements(By.css(".autocomplate li"));
-    return items.length > 0 ? items : null;
-  }, 10000, `No search results found for "${searchTerm}"`);
+    const results = await driver.wait(async () => {
+      const items = await driver.findElements(By.css(".autocomplate li"));
+      return items.length > 0 ? items : null;
+    }, 10000, `No search results found for "${searchTerm}"`);
 
-  return results;
+    return results;
+  } catch (e) {
+    const contextDiscarded =
+      e.name === "NoSuchWindowError" ||
+      /browsing context has been discarded/i.test(e.message || "");
+    if (contextDiscarded && retries > 0) {
+      return searchInIframe(driver, searchTerm, { retries: retries - 1 });
+    }
+    throw e;
+  }
 }
 
 /**
@@ -667,6 +705,36 @@ async function injectCopyTranscriptMenuItem(driver) {
   `);
 }
 
+/**
+ * Wait for the watch page below the player to hydrate (title + actions row).
+ * YouTube sometimes leaves headless sessions stuck on the skeleton/shimmer
+ * placeholders indefinitely, especially with extensions installed. Retries
+ * once with a page reload. Returns true when hydrated, false otherwise —
+ * callers should skip hydration-dependent tests on false (not an extension
+ * bug).
+ */
+async function ensureWatchPageHydrated(driver, { timeoutMs = 15000, reloads = 1 } = {}) {
+  const isHydrated = () =>
+    driver.executeScript(`
+      const title = document.querySelector('ytd-watch-metadata #title h1 yt-formatted-string');
+      const menuBtn = document.querySelector('#actions ytd-menu-renderer > yt-button-shape#button-shape button');
+      return !!(title && title.innerText.trim() && menuBtn);
+    `);
+
+  for (let attempt = 0; attempt <= reloads; attempt++) {
+    if (attempt > 0) {
+      await driver.navigate().refresh();
+    }
+    try {
+      await driver.wait(isHydrated, timeoutMs);
+      return true;
+    } catch {
+      // Timed out — fall through to reload and retry.
+    }
+  }
+  return false;
+}
+
 module.exports = {
   TEST_VIDEO,
   TEST_VIDEO_MODERN_UI,
@@ -684,4 +752,5 @@ module.exports = {
   injectMockSubtitles,
   searchInIframe,
   injectCopyTranscriptMenuItem,
+  ensureWatchPageHydrated,
 };

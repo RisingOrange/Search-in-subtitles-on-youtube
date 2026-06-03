@@ -968,7 +968,8 @@
 
     // Reset transcript state when video changes
     const newVideoId = helpers.getVideoId();
-    if (newVideoId !== state.CURRENT_VIDEO_ID) {
+    const videoChanged = newVideoId !== state.CURRENT_VIDEO_ID;
+    if (videoChanged) {
       state.CURRENT_VIDEO_ID = newVideoId;
       state.TRANSCRIPT_STATE = "idle";
       state.TRANSCRIPT_CACHE = null;
@@ -979,12 +980,23 @@
       return;
     }
 
-    state.YOUTUBE_PLAYER = document.querySelector(
-      "#container .html5-video-player",
-    );
-    if (state.YOUTUBE_PLAYER) {
+    // YouTube's newer player layouts ("delhi" experiment) don't always nest
+    // the player under #container, so fall back to the canonical player id.
+    state.YOUTUBE_PLAYER =
+      document.querySelector("#container .html5-video-player") ||
+      document.querySelector("#movie_player.html5-video-player");
+    // Wait until the control bar exists too — the player element can appear
+    // before its controls are rendered.
+    const rightControls =
+      state.YOUTUBE_PLAYER &&
+      state.YOUTUBE_PLAYER.querySelector(".ytp-right-controls");
+    if (state.YOUTUBE_PLAYER && rightControls) {
       addOrUpdateSearchButton();
-      addOrUpdateSearchInput(url);
+      // Keep the existing iframe on same-video URL rewrites (YouTube often
+      // normalizes query params in place) — replacing it resets the search UI.
+      if (videoChanged || !document.getElementById(state.IFRAME_ID)) {
+        addOrUpdateSearchInput(url);
+      }
       copyTranscript.setupPopupObserver();
       copyTranscript.setupMenuClickFlag();
     } else {
@@ -1009,9 +1021,14 @@
   function addOrUpdateSearchButton() {
     state.YOUTUBE_PLAYER_SEARCH_BUTTON = render.searchButton();
     if (!document.getElementById("subtitle-search-button")) {
-      state.YOUTUBE_RIGHT_CONTROLS = state.YOUTUBE_PLAYER.querySelector(
+      const rightControls = state.YOUTUBE_PLAYER.querySelector(
         ".ytp-right-controls",
       );
+      // YouTube's newer player layouts nest the buttons in wrapper divs;
+      // a button placed directly in .ytp-right-controls stays invisible there.
+      state.YOUTUBE_RIGHT_CONTROLS =
+        rightControls.querySelector(".ytp-right-controls-left") ||
+        rightControls;
       state.YOUTUBE_RIGHT_CONTROLS.insertBefore(
         state.YOUTUBE_PLAYER_SEARCH_BUTTON,
         state.YOUTUBE_RIGHT_CONTROLS.firstChild,

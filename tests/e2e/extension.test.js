@@ -13,6 +13,7 @@ const {
   saveDiagnostics,
   searchInIframe,
   injectCopyTranscriptMenuItem,
+  ensureWatchPageHydrated,
 } = require("./helpers");
 
 describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
@@ -67,8 +68,10 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
 
           btn.click();
 
+          // YouTube's newer watch layouts can take a while to hydrate the
+          // transcript panel contents (spinner shows first), so poll generously.
           const start = Date.now();
-          while (Date.now() - start < 5000) {
+          while (Date.now() - start < 15000) {
             const expandedPanels = [...document.querySelectorAll('ytd-engagement-panel-section-list-renderer')]
               .filter((panel) => panel.getAttribute('visibility') === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED');
 
@@ -282,6 +285,14 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
       // Make sure we're on the main page
       await switchToMainPage(driver);
 
+      // This test needs the below-player page content; YouTube sometimes never
+      // hydrates it for headless sessions (skeleton page).
+      if (!(await ensureWatchPageHydrated(driver))) {
+        await saveDiagnostics(driver, "05-skeleton-page");
+        t.skip("YouTube watch page failed to hydrate (skeleton page) — not an extension bug");
+        return;
+      }
+
       // Close the search iframe first (if open) so it doesn't block clicks
       await driver.executeScript(`
         const iframe = document.getElementById('YTSEARCH_IFRAME');
@@ -289,19 +300,30 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
       `);
       await driver.sleep(300);
 
-      // Find the three-dot (more actions) menu button below the video
-      const menuBtn = await waitForElement(
-        driver,
-        "#actions ytd-menu-renderer > yt-button-shape#button-shape button",
-        10000
-      );
-      // Scroll into view
-      await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
-      await driver.sleep(500);
-
-      // Click the menu button to open popup
-      await menuBtn.click();
-      await driver.sleep(1000);
+      // Open the three-dot (more actions) menu below the video and wait for
+      // it to populate. YouTube re-renders the button and can swallow clicks,
+      // so re-query and retry a few times.
+      let popupOpen = false;
+      for (let attempt = 0; attempt < 3 && !popupOpen; attempt++) {
+        const menuBtn = await waitForElement(
+          driver,
+          "#actions ytd-menu-renderer > yt-button-shape#button-shape button",
+          10000
+        );
+        await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
+        await driver.sleep(500);
+        await menuBtn.click();
+        popupOpen = await driver
+          .wait(async () => {
+            return driver.executeScript(`
+              const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
+              if (!dropdown || dropdown.style.display === 'none') return false;
+              const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
+              return items.length > 0;
+            `);
+          }, 5000)
+          .catch(() => false);
+      }
 
       // The extension's auto-injection relies on _isVideoMenuClick flag which
       // may not be set if YouTube re-rendered the button after setupMenuClickFlag.
@@ -311,13 +333,6 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
         "return !!document.querySelector('#yt-copy-transcript-item')"
       );
       if (!autoInjected) {
-        // Verify popup is open with menu items before injecting
-        const popupOpen = await driver.executeScript(`
-          const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
-          if (!dropdown || dropdown.style.display === 'none') return false;
-          const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
-          return items.length > 0;
-        `);
         assert.ok(popupOpen, "Three-dot menu popup should be open with menu items");
 
         await injectCopyTranscriptMenuItem(driver);
@@ -354,6 +369,13 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     skipIfBotBlocked(t);
     try {
       await switchToMainPage(driver);
+
+      if (!(await ensureWatchPageHydrated(driver))) {
+        await saveDiagnostics(driver, "06-skeleton-page");
+        t.skip("YouTube watch page failed to hydrate (skeleton page) — not an extension bug");
+        return;
+      }
+
       const openResult = await openTranscriptPanelFromPage();
       assert.ok(openResult.ok, `Failed to open transcript panel: ${openResult.error}`);
 
@@ -364,15 +386,29 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
         `Expected transcript panel to be open before copying, got: ${JSON.stringify(transcriptStateBefore)}`
       );
 
-      const menuBtn = await waitForElement(
-        driver,
-        "#actions ytd-menu-renderer > yt-button-shape#button-shape button",
-        10000
-      );
-      await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
-      await driver.sleep(500);
-      await menuBtn.click();
-      await driver.sleep(1000);
+      // Open the three-dot menu and wait for it to populate. YouTube
+      // re-renders the button and can swallow clicks, so retry a few times.
+      let popupOpen = false;
+      for (let attempt = 0; attempt < 3 && !popupOpen; attempt++) {
+        const menuBtn = await waitForElement(
+          driver,
+          "#actions ytd-menu-renderer > yt-button-shape#button-shape button",
+          10000
+        );
+        await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
+        await driver.sleep(500);
+        await menuBtn.click();
+        popupOpen = await driver
+          .wait(async () => {
+            return driver.executeScript(`
+              const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
+              if (!dropdown || dropdown.style.display === 'none') return false;
+              const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
+              return items.length > 0;
+            `);
+          }, 5000)
+          .catch(() => false);
+      }
 
       const autoInjected = await driver.executeScript(
         "return !!document.querySelector('#yt-copy-transcript-item')"
@@ -451,6 +487,14 @@ describe("Modern Transcript UI", { timeout: 120000 }, () => {
     skipIfBotBlocked(t);
     try {
       await driver.sleep(2000);
+
+      // The transcript button lives in the video description; YouTube
+      // sometimes never hydrates it for headless sessions (skeleton page).
+      if (!(await ensureWatchPageHydrated(driver))) {
+        await saveDiagnostics(driver, "11-skeleton-page");
+        t.skip("YouTube watch page failed to hydrate (skeleton page) — not an extension bug");
+        return;
+      }
 
       // Scroll down and expand description to reveal the "Show transcript" button
       await driver.executeScript(`
