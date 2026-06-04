@@ -19,6 +19,10 @@ const ADBLOCKER_DOWNLOAD_URL =
 // add-on never run, so every injection-dependent test fails. The previous code
 // passed `geckodriver.path` (undefined in geckodriver@4.x) to ServiceBuilder,
 // which made Selenium Manager silently download and use the latest geckodriver.
+//
+// Revisit this pin when geckodriver releases a version > 0.37.0 (no upstream
+// bug report existed as of 2026-06-04) — eventually a newer Firefox will
+// require a newer driver and this pin will become the breakage.
 const GECKODRIVER_VERSION = "0.36.0";
 
 let geckodriverPathPromise = null;
