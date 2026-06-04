@@ -10,6 +10,7 @@
     TRANSCRIPT_STATE: "idle", // idle | loading | ready | error
     TRANSCRIPT_CACHE: null,   // { videoId: string, cues: array }
     CURRENT_VIDEO_ID: null,
+    IFRAME_VIDEO_ID: null, // video the search iframe was last built for
   };
 
   const helpers = {
@@ -963,28 +964,50 @@
   }
 
   function setup(url) {
-    state.SEARCH_BOX_VISIBILITY = false;
-    state.MOUSE_OVER_FRAME = false;
-
     // Reset transcript state when video changes
     const newVideoId = helpers.getVideoId();
-    if (newVideoId !== state.CURRENT_VIDEO_ID) {
+    const videoChanged = newVideoId !== state.CURRENT_VIDEO_ID;
+    if (videoChanged) {
       state.CURRENT_VIDEO_ID = newVideoId;
       state.TRANSCRIPT_STATE = "idle";
       state.TRANSCRIPT_CACHE = null;
     }
     copyTranscript.cleanup();
 
+    // Keep the existing iframe (and its open/closed state) on same-video URL
+    // rewrites — YouTube often normalizes query params in place, and
+    // replacing the iframe would reset the search UI. Compare against the
+    // video the iframe was actually built for (not videoChanged): when a
+    // video change hits the controls-not-ready retry path, CURRENT_VIDEO_ID
+    // is already updated but the iframe still belongs to the previous video.
+    const keepIframe =
+      helpers.isVideoURL(url) &&
+      newVideoId === state.IFRAME_VIDEO_ID &&
+      !!document.getElementById(state.IFRAME_ID);
+    if (!keepIframe) {
+      state.SEARCH_BOX_VISIBILITY = false;
+      state.MOUSE_OVER_FRAME = false;
+    }
+
     if (!helpers.isVideoURL(url)) {
       return;
     }
 
-    state.YOUTUBE_PLAYER = document.querySelector(
-      "#container .html5-video-player",
-    );
-    if (state.YOUTUBE_PLAYER) {
-      addOrUpdateSearchButton();
-      addOrUpdateSearchInput(url);
+    // YouTube's newer player layouts ("delhi" experiment) don't always nest
+    // the player under #container, so fall back to the canonical player id.
+    state.YOUTUBE_PLAYER =
+      document.querySelector("#container .html5-video-player") ||
+      document.querySelector("#movie_player.html5-video-player");
+    // Wait until the control bar exists too — the player element can appear
+    // before its controls are rendered.
+    const rightControls =
+      state.YOUTUBE_PLAYER &&
+      state.YOUTUBE_PLAYER.querySelector(".ytp-right-controls");
+    if (state.YOUTUBE_PLAYER && rightControls) {
+      addOrUpdateSearchButton(rightControls);
+      if (!keepIframe) {
+        addOrUpdateSearchInput(url);
+      }
       copyTranscript.setupPopupObserver();
       copyTranscript.setupMenuClickFlag();
     } else {
@@ -998,6 +1021,7 @@
       chrome.runtime.getURL("src/app/index.html") +
       "?url=" +
       encodeURIComponent(url);
+    state.IFRAME_VIDEO_ID = helpers.getVideoId();
 
     if (!document.getElementById(state.IFRAME_ID)) {
       state.YOUTUBE_PLAYER.appendChild(state.SEARCH_IFRAME);
@@ -1006,20 +1030,23 @@
     }
   }
 
-  function addOrUpdateSearchButton() {
+  function addOrUpdateSearchButton(rightControls) {
+    // render.searchButton() returns the existing button when one is present.
     state.YOUTUBE_PLAYER_SEARCH_BUTTON = render.searchButton();
-    if (!document.getElementById("subtitle-search-button")) {
-      state.YOUTUBE_RIGHT_CONTROLS = state.YOUTUBE_PLAYER.querySelector(
-        ".ytp-right-controls",
-      );
+    // YouTube's newer player layouts nest the buttons in wrapper divs; a
+    // button placed directly in .ytp-right-controls stays invisible there.
+    // The wrapper can render after the controls bar, so re-check the intended
+    // parent on every call and (re)insert the button when it isn't there yet.
+    state.YOUTUBE_RIGHT_CONTROLS =
+      rightControls.querySelector(".ytp-right-controls-left") || rightControls;
+    if (
+      state.YOUTUBE_PLAYER_SEARCH_BUTTON.parentElement !==
+      state.YOUTUBE_RIGHT_CONTROLS
+    ) {
       state.YOUTUBE_RIGHT_CONTROLS.insertBefore(
         state.YOUTUBE_PLAYER_SEARCH_BUTTON,
         state.YOUTUBE_RIGHT_CONTROLS.firstChild,
       );
-    } else {
-      document
-        .getElementById("subtitle-search-button")
-        .replaceWith(state.YOUTUBE_PLAYER_SEARCH_BUTTON);
     }
   }
 

@@ -1,7 +1,7 @@
 const { execSync } = require("child_process");
 const { Builder, By, until } = require("selenium-webdriver");
 const firefox = require("selenium-webdriver/firefox");
-const geckodriver = require("geckodriver");
+const { download: downloadGeckodriver } = require("geckodriver");
 const fs = require("fs");
 const path = require("path");
 
@@ -13,6 +13,55 @@ const ADBLOCKER_XPI_PATH = path.join(ADBLOCKER_CACHE_DIR, "adblocker-ultimate-la
 const ADBLOCKER_DOWNLOAD_URL =
   process.env.ADBLOCKER_ULTIMATE_URL ||
   "https://addons.mozilla.org/firefox/downloads/latest/adblocker-ultimate/addon-494908-latest.xpi";
+
+// Pinned geckodriver version. geckodriver 0.37.0 (2026-06-03) has a regression
+// where installAddon() reports success but content scripts of the installed
+// add-on never run, so every injection-dependent test fails. The previous code
+// passed `geckodriver.path` (undefined in geckodriver@4.x) to ServiceBuilder,
+// which made Selenium Manager silently download and use the latest geckodriver.
+//
+// Revisit this pin when geckodriver releases a version > 0.37.0 (no upstream
+// bug report existed as of 2026-06-04) — eventually a newer Firefox will
+// require a newer driver and this pin will become the breakage.
+const GECKODRIVER_VERSION = "0.36.0";
+
+let geckodriverPathPromise = null;
+function ensureGeckodriver() {
+  if (!geckodriverPathPromise) {
+    geckodriverPathPromise = downloadAndVerifyGeckodriver().catch((e) => {
+      // Don't cache the failure — let the next launch attempt a fresh download.
+      geckodriverPathPromise = null;
+      throw e;
+    });
+  }
+  return geckodriverPathPromise;
+}
+
+async function downloadAndVerifyGeckodriver() {
+  // download() returns any binary already present in cacheDir without
+  // checking its version, so scope the cache dir by version to make the
+  // pin effective.
+  const cacheDir = path.join(
+    PROJECT_ROOT,
+    "dist",
+    "geckodriver",
+    GECKODRIVER_VERSION
+  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const binaryPath = await downloadGeckodriver(GECKODRIVER_VERSION, cacheDir);
+    try {
+      // A failed/partial earlier download leaves a corrupt binary that
+      // download() would happily keep returning — verify before using it.
+      execSync(`"${binaryPath}" --version`, { stdio: "pipe" });
+      return binaryPath;
+    } catch {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  }
+  throw new Error(
+    `geckodriver ${GECKODRIVER_VERSION} binary failed verification after re-download`
+  );
+}
 
 // TED-Ed: "The benefits of a good night's sleep" — has creator-provided English captions.
 // Uses old transcript UI (engagement-panel-searchable-transcript with ytd-transcript-segment-renderer).
@@ -26,6 +75,10 @@ const TEST_VIDEO_MODERN_UI = {
   url: "https://www.youtube.com/watch?v=nve6PtFJeo4&hl=en&gl=US",
   searchTerm: "claude",
 };
+
+// The three-dot ("More actions") button below the video.
+const VIDEO_MENU_BUTTON_SELECTOR =
+  "#actions ytd-menu-renderer > yt-button-shape#button-shape button";
 
 /**
  * Build the extension zip using web-ext.
@@ -76,7 +129,7 @@ function ensureAdblockerUltimateXpi() {
 
 async function launchFirefoxWithExtension(extensionPath) {
   const options = new firefox.Options();
-  const service = new firefox.ServiceBuilder(geckodriver.path);
+  const service = new firefox.ServiceBuilder(await ensureGeckodriver());
   // Allow running with a visible browser via E2E_HEADED=1 (useful for local debugging)
   if (process.env.E2E_HEADED !== "1") {
     options.addArguments("-headless");
@@ -601,30 +654,44 @@ async function injectMockSubtitles(driver) {
  * Switch into the extension iframe, inject mock subtitles, type a search term,
  * and wait for results to appear. Returns the list of result elements.
  * Caller is responsible for switching back to main page afterwards.
+ *
+ * Retries once when the iframe's browsing context gets discarded mid-search —
+ * YouTube occasionally re-renders the player subtree (e.g. ad transitions),
+ * which destroys and re-creates the extension iframe.
  */
-async function searchInIframe(driver, searchTerm) {
-  await switchToMainPage(driver);
-  await switchToExtensionIframe(driver);
+async function searchInIframe(driver, searchTerm, { retries = 1 } = {}) {
+  try {
+    await switchToMainPage(driver);
+    await switchToExtensionIframe(driver);
 
-  const input = await waitForElement(
-    driver,
-    'input[placeholder="Search in video..."]',
-    30000
-  );
+    const input = await waitForElement(
+      driver,
+      'input[placeholder="Search in video..."]',
+      30000
+    );
 
-  await injectMockSubtitles(driver);
+    await injectMockSubtitles(driver);
 
-  await input.clear();
-  await input.sendKeys(searchTerm);
+    await input.clear();
+    await input.sendKeys(searchTerm);
 
-  await driver.sleep(1000);
+    await driver.sleep(1000);
 
-  const results = await driver.wait(async () => {
-    const items = await driver.findElements(By.css(".autocomplate li"));
-    return items.length > 0 ? items : null;
-  }, 10000, `No search results found for "${searchTerm}"`);
+    const results = await driver.wait(async () => {
+      const items = await driver.findElements(By.css(".autocomplate li"));
+      return items.length > 0 ? items : null;
+    }, 10000, `No search results found for "${searchTerm}"`);
 
-  return results;
+    return results;
+  } catch (e) {
+    const contextDiscarded =
+      e.name === "NoSuchWindowError" ||
+      /browsing context has been discarded/i.test(e.message || "");
+    if (contextDiscarded && retries > 0) {
+      return searchInIframe(driver, searchTerm, { retries: retries - 1 });
+    }
+    throw e;
+  }
 }
 
 /**
@@ -634,7 +701,17 @@ async function searchInIframe(driver, searchTerm) {
  */
 async function injectCopyTranscriptMenuItem(driver) {
   await driver.executeScript(`
-    const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
+    // Target the dropdown that is actually open (same predicate as
+    // openVideoMenu's isPopupOpen) — the first dropdown in DOM order can be
+    // a stale hidden one, and injecting there would test nothing.
+    const dropdown = [...document.querySelectorAll('ytd-popup-container tp-yt-iron-dropdown')].find((d) => {
+      if (d.style.display === 'none') return false;
+      if (d.getAttribute('aria-hidden') === 'true') return false;
+      const rect = d.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      return d.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer').length > 0;
+    });
+    if (!dropdown) throw new Error('no open menu dropdown to inject into');
     const listbox = dropdown.querySelector('tp-yt-paper-listbox, #items');
     const item = document.createElement('tp-yt-paper-item');
     item.id = 'yt-copy-transcript-item';
@@ -667,6 +744,114 @@ async function injectCopyTranscriptMenuItem(driver) {
   `);
 }
 
+/**
+ * Wait for the watch page below the player to hydrate (title + actions row).
+ * Headless sessions show skeleton/shimmer placeholders until hydration
+ * completes. Returns true when hydrated, false otherwise — callers should
+ * fail their test on false: with the generous wait below, a miss is a real
+ * anomaly (or a YouTube markup change), not environment noise.
+ *
+ * Timings are empirical (8-trial pure-wait experiment, 2026-06-04):
+ * hydration is bimodal — ~1s or ~18-22s — and all sessions hydrated within
+ * 23s without any reload. An earlier 15s wait + reload-retry approach only
+ * appeared to work because each reload re-raced the same too-short window;
+ * reloads restart hydration rather than rescue it, so we just wait longer.
+ */
+async function ensureWatchPageHydrated(driver) {
+  // Deliberately checks broad hydration markers (title + any action button)
+  // rather than the specific menu-button selector the extension uses — if
+  // YouTube changes that markup on an otherwise hydrated page, the dependent
+  // tests should fail (exposing the regression), not skip.
+  // Transient executeScript failures (e.g. the page is mid-navigation) must
+  // not reject the wait — driver.wait() propagates condition rejections
+  // immediately, which would silently burn the whole 60s budget.
+  const isHydrated = () =>
+    driver
+      .executeScript(`
+        const title = document.querySelector('ytd-watch-metadata #title h1 yt-formatted-string');
+        const actionButton = document.querySelector('ytd-watch-metadata #actions button');
+        return !!(title && title.innerText.trim() && actionButton);
+      `)
+      .catch(() => false);
+
+  // One long wait (~3x the slow mode), plus a single reload as a last
+  // resort for the rare genuinely-stuck session.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      await driver.navigate().refresh();
+    }
+    try {
+      await driver.wait(isHydrated, 60000);
+      return true;
+    } catch {
+      // Timed out — fall through to reload and retry.
+    }
+  }
+  return false;
+}
+
+/**
+ * Open the three-dot ("More actions") menu below the video and wait for its
+ * popup to populate. YouTube re-renders the button and can swallow clicks,
+ * so re-query and retry a few times. Returns true when the popup is open
+ * with menu items.
+ */
+async function openVideoMenu(driver) {
+  // Strict popup check: any dropdown counts only when it is actually
+  // rendered (not display:none, not aria-hidden, non-zero size) AND contains
+  // menu items — a stale or unrelated dropdown must not count as open.
+  const isPopupOpen = () =>
+    driver.executeScript(`
+      return [...document.querySelectorAll('ytd-popup-container tp-yt-iron-dropdown')].some((dropdown) => {
+        if (dropdown.style.display === 'none') return false;
+        if (dropdown.getAttribute('aria-hidden') === 'true') return false;
+        const rect = dropdown.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
+        return items.length > 0;
+      });
+    `);
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    // Don't click when the popup is already open — the button toggles, so a
+    // blind re-click after a slow populate would close it again.
+    if (await isPopupOpen()) return true;
+    const menuBtn = await waitForElement(driver, VIDEO_MENU_BUTTON_SELECTOR, 10000);
+    await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
+    await driver.sleep(500);
+    // Re-check right before clicking: the previous attempt's click can land
+    // late and open the dropdown during the scroll/sleep above — clicking
+    // now would toggle it closed again.
+    if (await isPopupOpen()) return true;
+    // YouTube swallows native (trusted) clicks on this button in some
+    // sessions, so rotate click strategies: Selenium click, JS click, and a
+    // synthetic pointer-event sequence (Polymer buttons may listen on
+    // pointerdown, which a bare JS click() does not emit).
+    if (attempt % 3 === 0) {
+      await menuBtn.click().catch(() => {});
+    } else if (attempt % 3 === 1) {
+      await driver.executeScript("arguments[0].click()", menuBtn);
+    } else {
+      await driver.executeScript(`
+        const btn = arguments[0];
+        const rect = btn.getBoundingClientRect();
+        const opts = {
+          bubbles: true, cancelable: true, composed: true,
+          clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2,
+        };
+        btn.dispatchEvent(new PointerEvent('pointerdown', opts));
+        btn.dispatchEvent(new MouseEvent('mousedown', opts));
+        btn.dispatchEvent(new PointerEvent('pointerup', opts));
+        btn.dispatchEvent(new MouseEvent('mouseup', opts));
+        btn.dispatchEvent(new MouseEvent('click', opts));
+      `, menuBtn);
+    }
+    const popupOpen = await driver.wait(isPopupOpen, 5000).catch(() => false);
+    if (popupOpen) return true;
+  }
+  return false;
+}
+
 module.exports = {
   TEST_VIDEO,
   TEST_VIDEO_MODERN_UI,
@@ -684,4 +869,6 @@ module.exports = {
   injectMockSubtitles,
   searchInIframe,
   injectCopyTranscriptMenuItem,
+  ensureWatchPageHydrated,
+  openVideoMenu,
 };

@@ -13,9 +13,11 @@ const {
   saveDiagnostics,
   searchInIframe,
   injectCopyTranscriptMenuItem,
+  ensureWatchPageHydrated,
+  openVideoMenu,
 } = require("./helpers");
 
-describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
+describe("YouTube Subtitle Search Extension", { timeout: 600000 }, () => {
   let driver;
   let skipReason = null;
 
@@ -67,8 +69,10 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
 
           btn.click();
 
+          // YouTube's newer watch layouts can take a while to hydrate the
+          // transcript panel contents (spinner shows first), so poll generously.
           const start = Date.now();
-          while (Date.now() - start < 5000) {
+          while (Date.now() - start < 15000) {
             const expandedPanels = [...document.querySelectorAll('ytd-engagement-panel-section-list-renderer')]
               .filter((panel) => panel.getAttribute('visibility') === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED');
 
@@ -276,11 +280,25 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     }
   });
 
-  it("should inject 'Copy transcript' into the three-dot menu", async (t) => {
+  // NOTE: this verifies the Copy-transcript item RENDERS correctly inside
+  // YouTube's real popup DOM. It does not verify the extension's own
+  // auto-injection: a WebDriver click never sets off the extension's
+  // popup-observer path (confirmed headed and headless — only a genuine human
+  // click does, verified manually), and the fallback below uses a test-side
+  // reimplementation of the injection. Real auto-injection coverage is manual.
+  it("should render a 'Copy transcript' item correctly in the three-dot menu", async (t) => {
     skipIfBotBlocked(t);
     try {
       // Make sure we're on the main page
       await switchToMainPage(driver);
+
+      // This test needs the below-player page content. Hydration reliably
+      // completes within ~23s (we wait 60s + a reload), so a miss here is a
+      // real anomaly worth failing on, not headless noise.
+      if (!(await ensureWatchPageHydrated(driver))) {
+        await saveDiagnostics(driver, "05-skeleton-page");
+        assert.fail("YouTube watch page failed to hydrate within the wait + reload budget");
+      }
 
       // Close the search iframe first (if open) so it doesn't block clicks
       await driver.executeScript(`
@@ -289,37 +307,25 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
       `);
       await driver.sleep(300);
 
-      // Find the three-dot (more actions) menu button below the video
-      const menuBtn = await waitForElement(
-        driver,
-        "#actions ytd-menu-renderer > yt-button-shape#button-shape button",
-        10000
-      );
-      // Scroll into view
-      await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
-      await driver.sleep(500);
+      const popupOpen = await openVideoMenu(driver);
+      if (!popupOpen) {
+        // Opening the three-dot menu is pure YouTube machinery (the extension
+        // only reacts after the dropdown appears). Some headless sessions get
+        // an arm where the button is inert across all click strategies —
+        // environment noise, same category as bot challenges.
+        await saveDiagnostics(driver, "05-menu-inert");
+        t.skip("YouTube's own three-dot menu did not open this session — not an extension bug");
+        return;
+      }
 
-      // Click the menu button to open popup
-      await menuBtn.click();
-      await driver.sleep(1000);
-
-      // The extension's auto-injection relies on _isVideoMenuClick flag which
-      // may not be set if YouTube re-rendered the button after setupMenuClickFlag.
-      // If the item wasn't injected automatically, manually inject it to verify
-      // the menu item renders correctly in YouTube's popup.
+      // A WebDriver click doesn't trigger the extension's auto-injection, so
+      // inject the item ourselves to verify it renders correctly in YouTube's
+      // popup. (If a future change makes auto-injection WebDriver-reachable,
+      // this becomes a no-op and the item will already be present.)
       const autoInjected = await driver.executeScript(
         "return !!document.querySelector('#yt-copy-transcript-item')"
       );
       if (!autoInjected) {
-        // Verify popup is open with menu items before injecting
-        const popupOpen = await driver.executeScript(`
-          const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
-          if (!dropdown || dropdown.style.display === 'none') return false;
-          const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
-          return items.length > 0;
-        `);
-        assert.ok(popupOpen, "Three-dot menu popup should be open with menu items");
-
         await injectCopyTranscriptMenuItem(driver);
       }
 
@@ -354,6 +360,12 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
     skipIfBotBlocked(t);
     try {
       await switchToMainPage(driver);
+
+      if (!(await ensureWatchPageHydrated(driver))) {
+        await saveDiagnostics(driver, "06-skeleton-page");
+        assert.fail("YouTube watch page failed to hydrate within the wait + reload budget");
+      }
+
       const openResult = await openTranscriptPanelFromPage();
       assert.ok(openResult.ok, `Failed to open transcript panel: ${openResult.error}`);
 
@@ -364,15 +376,12 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
         `Expected transcript panel to be open before copying, got: ${JSON.stringify(transcriptStateBefore)}`
       );
 
-      const menuBtn = await waitForElement(
-        driver,
-        "#actions ytd-menu-renderer > yt-button-shape#button-shape button",
-        10000
-      );
-      await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
-      await driver.sleep(500);
-      await menuBtn.click();
-      await driver.sleep(1000);
+      const menuOpened = await openVideoMenu(driver);
+      if (!menuOpened) {
+        await saveDiagnostics(driver, "06-menu-inert");
+        t.skip("YouTube's own three-dot menu did not open this session — not an extension bug");
+        return;
+      }
 
       const autoInjected = await driver.executeScript(
         "return !!document.querySelector('#yt-copy-transcript-item')"
@@ -382,7 +391,19 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
       }
 
       const copyItem = await waitForElement(driver, "#yt-copy-transcript-item", 5000);
-      await copyItem.click();
+      try {
+        await copyItem.click();
+      } catch (clickErr) {
+        // Selenium can fail to scroll items inside YouTube's positioned
+        // dropdown into view — fall back to a direct JS click, but only on a
+        // visible item: JS-clicking one inside a closed dropdown would make
+        // this test pass without exercising the menu at all.
+        assert.ok(
+          await copyItem.isDisplayed(),
+          `Copy transcript item not clickable and not visible: ${clickErr.message}`
+        );
+        await driver.executeScript("arguments[0].click()", copyItem);
+      }
       await driver.sleep(2000);
 
       const transcriptStateAfter = await getTranscriptPanelState();
@@ -410,7 +431,7 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
 // old panel) reliably renders content in headless Firefox. It verifies the extension's
 // selectors (.ytwTranscriptSegmentViewModelTimestamp plus YouTube's attributed-string
 // text spans) can extract timestamps and text from the actual YouTube DOM.
-describe("Modern Transcript UI", { timeout: 120000 }, () => {
+describe("Modern Transcript UI", { timeout: 600000 }, () => {
   let driver;
   let skipReason = null;
 
@@ -451,6 +472,14 @@ describe("Modern Transcript UI", { timeout: 120000 }, () => {
     skipIfBotBlocked(t);
     try {
       await driver.sleep(2000);
+
+      // The transcript button lives in the video description, which needs
+      // the watch page hydrated. Hydration reliably completes within ~23s
+      // (we wait 60s + a reload), so a miss here is worth failing on.
+      if (!(await ensureWatchPageHydrated(driver))) {
+        await saveDiagnostics(driver, "11-skeleton-page");
+        assert.fail("YouTube watch page failed to hydrate within the wait + reload budget");
+      }
 
       // Scroll down and expand description to reveal the "Show transcript" button
       await driver.executeScript(`
