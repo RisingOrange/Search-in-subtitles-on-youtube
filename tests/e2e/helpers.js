@@ -732,10 +732,10 @@ async function injectCopyTranscriptMenuItem(driver) {
 
 /**
  * Wait for the watch page below the player to hydrate (title + actions row).
- * YouTube sometimes leaves headless sessions stuck on the skeleton/shimmer
- * placeholders, especially with extensions installed. Returns true when
- * hydrated, false otherwise — callers should skip hydration-dependent tests
- * on false (not an extension bug).
+ * Headless sessions show skeleton/shimmer placeholders until hydration
+ * completes. Returns true when hydrated, false otherwise — callers should
+ * fail their test on false: with the generous wait below, a miss is a real
+ * anomaly (or a YouTube markup change), not environment noise.
  *
  * Timings are empirical (8-trial pure-wait experiment, 2026-06-04):
  * hydration is bimodal — ~1s or ~18-22s — and all sessions hydrated within

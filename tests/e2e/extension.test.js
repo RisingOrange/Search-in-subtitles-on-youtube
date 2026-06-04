@@ -286,12 +286,12 @@ describe("YouTube Subtitle Search Extension", { timeout: 300000 }, () => {
       // Make sure we're on the main page
       await switchToMainPage(driver);
 
-      // This test needs the below-player page content; YouTube sometimes never
-      // hydrates it for headless sessions (skeleton page).
+      // This test needs the below-player page content. Hydration reliably
+      // completes within ~23s (we wait 60s + a reload), so a miss here is a
+      // real anomaly worth failing on, not headless noise.
       if (!(await ensureWatchPageHydrated(driver))) {
         await saveDiagnostics(driver, "05-skeleton-page");
-        t.skip("YouTube watch page failed to hydrate (skeleton page) — not an extension bug");
-        return;
+        assert.fail("YouTube watch page failed to hydrate within the wait + reload budget");
       }
 
       // Close the search iframe first (if open) so it doesn't block clicks
@@ -350,8 +350,7 @@ describe("YouTube Subtitle Search Extension", { timeout: 300000 }, () => {
 
       if (!(await ensureWatchPageHydrated(driver))) {
         await saveDiagnostics(driver, "06-skeleton-page");
-        t.skip("YouTube watch page failed to hydrate (skeleton page) — not an extension bug");
-        return;
+        assert.fail("YouTube watch page failed to hydrate within the wait + reload budget");
       }
 
       const openResult = await openTranscriptPanelFromPage();
@@ -444,12 +443,12 @@ describe("Modern Transcript UI", { timeout: 300000 }, () => {
     try {
       await driver.sleep(2000);
 
-      // The transcript button lives in the video description; YouTube
-      // sometimes never hydrates it for headless sessions (skeleton page).
+      // The transcript button lives in the video description, which needs
+      // the watch page hydrated. Hydration reliably completes within ~23s
+      // (we wait 60s + a reload), so a miss here is worth failing on.
       if (!(await ensureWatchPageHydrated(driver))) {
         await saveDiagnostics(driver, "11-skeleton-page");
-        t.skip("YouTube watch page failed to hydrate (skeleton page) — not an extension bug");
-        return;
+        assert.fail("YouTube watch page failed to hydrate within the wait + reload budget");
       }
 
       // Scroll down and expand description to reveal the "Show transcript" button
