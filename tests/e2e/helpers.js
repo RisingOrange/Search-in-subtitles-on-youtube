@@ -752,12 +752,17 @@ async function ensureWatchPageHydrated(driver) {
   // rather than the specific menu-button selector the extension uses — if
   // YouTube changes that markup on an otherwise hydrated page, the dependent
   // tests should fail (exposing the regression), not skip.
+  // Transient executeScript failures (e.g. the page is mid-navigation) must
+  // not reject the wait — driver.wait() propagates condition rejections
+  // immediately, which would silently burn the whole 60s budget.
   const isHydrated = () =>
-    driver.executeScript(`
-      const title = document.querySelector('ytd-watch-metadata #title h1 yt-formatted-string');
-      const actionButton = document.querySelector('ytd-watch-metadata #actions button');
-      return !!(title && title.innerText.trim() && actionButton);
-    `);
+    driver
+      .executeScript(`
+        const title = document.querySelector('ytd-watch-metadata #title h1 yt-formatted-string');
+        const actionButton = document.querySelector('ytd-watch-metadata #actions button');
+        return !!(title && title.innerText.trim() && actionButton);
+      `)
+      .catch(() => false);
 
   // One long wait (~3x the slow mode), plus a single reload as a last
   // resort for the rare genuinely-stuck session.
@@ -782,22 +787,51 @@ async function ensureWatchPageHydrated(driver) {
  * with menu items.
  */
 async function openVideoMenu(driver) {
+  // Strict popup check: any dropdown counts only when it is actually
+  // rendered (not display:none, not aria-hidden, non-zero size) AND contains
+  // menu items — a stale or unrelated dropdown must not count as open.
   const isPopupOpen = () =>
     driver.executeScript(`
-      const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
-      if (!dropdown || dropdown.style.display === 'none') return false;
-      const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
-      return items.length > 0;
+      return [...document.querySelectorAll('ytd-popup-container tp-yt-iron-dropdown')].some((dropdown) => {
+        if (dropdown.style.display === 'none') return false;
+        if (dropdown.getAttribute('aria-hidden') === 'true') return false;
+        const rect = dropdown.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
+        return items.length > 0;
+      });
     `);
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 6; attempt++) {
     // Don't click when the popup is already open — the button toggles, so a
     // blind re-click after a slow populate would close it again.
     if (await isPopupOpen()) return true;
     const menuBtn = await waitForElement(driver, VIDEO_MENU_BUTTON_SELECTOR, 10000);
     await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
     await driver.sleep(500);
-    await menuBtn.click();
+    // YouTube swallows native (trusted) clicks on this button in some
+    // sessions, so rotate click strategies: Selenium click, JS click, and a
+    // synthetic pointer-event sequence (Polymer buttons may listen on
+    // pointerdown, which a bare JS click() does not emit).
+    if (attempt % 3 === 0) {
+      await menuBtn.click().catch(() => {});
+    } else if (attempt % 3 === 1) {
+      await driver.executeScript("arguments[0].click()", menuBtn);
+    } else {
+      await driver.executeScript(`
+        const btn = arguments[0];
+        const rect = btn.getBoundingClientRect();
+        const opts = {
+          bubbles: true, cancelable: true, composed: true,
+          clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2,
+        };
+        btn.dispatchEvent(new PointerEvent('pointerdown', opts));
+        btn.dispatchEvent(new MouseEvent('mousedown', opts));
+        btn.dispatchEvent(new PointerEvent('pointerup', opts));
+        btn.dispatchEvent(new MouseEvent('mouseup', opts));
+        btn.dispatchEvent(new MouseEvent('click', opts));
+      `, menuBtn);
+    }
     const popupOpen = await driver.wait(isPopupOpen, 5000).catch(() => false);
     if (popupOpen) return true;
   }
