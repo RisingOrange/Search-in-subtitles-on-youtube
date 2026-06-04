@@ -733,10 +733,14 @@ async function injectCopyTranscriptMenuItem(driver) {
 /**
  * Wait for the watch page below the player to hydrate (title + actions row).
  * YouTube sometimes leaves headless sessions stuck on the skeleton/shimmer
- * placeholders indefinitely, especially with extensions installed. Retries
- * once with a page reload. Returns true when hydrated, false otherwise —
- * callers should skip hydration-dependent tests on false (not an extension
- * bug).
+ * placeholders, especially with extensions installed. Returns true when
+ * hydrated, false otherwise — callers should skip hydration-dependent tests
+ * on false (not an extension bug).
+ *
+ * Timings are empirical (8-trial experiment, 2026-06-04): hydration takes
+ * 11-14s when it happens, most skeleton sessions recover on the first
+ * reload, one of seven needed a third reload, and ~1 in 8 sessions never
+ * hydrated at all.
  */
 async function ensureWatchPageHydrated(driver) {
   // Deliberately checks broad hydration markers (title + any action button)
@@ -750,13 +754,15 @@ async function ensureWatchPageHydrated(driver) {
       return !!(title && title.innerText.trim() && actionButton);
     `);
 
-  // One initial wait plus one reload retry.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // One initial wait plus up to three reload retries.
+  for (let attempt = 0; attempt < 4; attempt++) {
     if (attempt > 0) {
       await driver.navigate().refresh();
     }
     try {
-      await driver.wait(isHydrated, 15000);
+      // Hydration takes 11-14s when it happens, so 15s cuts it too close;
+      // give the initial load extra headroom.
+      await driver.wait(isHydrated, attempt === 0 ? 30000 : 20000);
       return true;
     } catch {
       // Timed out — fall through to reload and retry.

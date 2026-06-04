@@ -34,6 +34,36 @@ LOG=$(mktemp)
 ./scripts/test-local.sh >"$LOG" 2>&1
 EXIT_CODE=$?
 
+# Hydration-dependent tests skip (not fail) on YouTube skeleton pages, so a
+# persistent skeleton regime would hide breakage behind green runs forever.
+# Track consecutive skip days and raise an issue once per streak of 3.
+SKIP_STREAK_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/yt-search-e2e-skip-streak"
+if grep -q "SKIP.*skeleton page" "$LOG"; then
+  PREV_STREAK=$(cat "$SKIP_STREAK_FILE" 2>/dev/null || echo 0)
+  PREV_STREAK=${PREV_STREAK//[^0-9]/}
+  SKIP_STREAK=$(( ${PREV_STREAK:-0} + 1 ))
+else
+  SKIP_STREAK=0
+fi
+echo "$SKIP_STREAK" > "$SKIP_STREAK_FILE"
+
+if [ "$SKIP_STREAK" -ge 3 ]; then
+  GH_TOKEN=$(cat "$BOT_TOKEN_FILE") gh issue create \
+    --title "e2e hydration tests skipped $SKIP_STREAK days in a row (skeleton pages)" \
+    --label "bot,e2e-failure" \
+    --assignee RisingOrange \
+    --body "$(cat <<EOF
+The hydration-dependent e2e tests (copy transcript, modern transcript scrape) have been skipping for $SKIP_STREAK consecutive daily runs because YouTube served a skeleton watch page that never hydrated, even after reload retries.
+
+One-off skeleton pages are expected headless-environment noise, but a streak this long likely means either YouTube changed the watch-page markup (the hydration markers in \`ensureWatchPageHydrated()\` no longer match) or headless sessions are being served degraded pages permanently. Either way these features are currently untested — investigate.
+
+*Automatically created by \`scripts/scheduled-test.sh\`*
+EOF
+)" 2>/dev/null || echo "Warning: failed to create GitHub issue"
+  # Reset so we alert once per streak, not every day.
+  echo 0 > "$SKIP_STREAK_FILE"
+fi
+
 if [ "$EXIT_CODE" -eq 0 ]; then
   rm -f "$LOG"
   exit 0
