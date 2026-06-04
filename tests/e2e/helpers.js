@@ -701,7 +701,17 @@ async function searchInIframe(driver, searchTerm, { retries = 1 } = {}) {
  */
 async function injectCopyTranscriptMenuItem(driver) {
   await driver.executeScript(`
-    const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
+    // Target the dropdown that is actually open (same predicate as
+    // openVideoMenu's isPopupOpen) — the first dropdown in DOM order can be
+    // a stale hidden one, and injecting there would test nothing.
+    const dropdown = [...document.querySelectorAll('ytd-popup-container tp-yt-iron-dropdown')].find((d) => {
+      if (d.style.display === 'none') return false;
+      if (d.getAttribute('aria-hidden') === 'true') return false;
+      const rect = d.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      return d.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer').length > 0;
+    });
+    if (!dropdown) throw new Error('no open menu dropdown to inject into');
     const listbox = dropdown.querySelector('tp-yt-paper-listbox, #items');
     const item = document.createElement('tp-yt-paper-item');
     item.id = 'yt-copy-transcript-item';
@@ -809,6 +819,10 @@ async function openVideoMenu(driver) {
     const menuBtn = await waitForElement(driver, VIDEO_MENU_BUTTON_SELECTOR, 10000);
     await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
     await driver.sleep(500);
+    // Re-check right before clicking: the previous attempt's click can land
+    // late and open the dropdown during the scroll/sleep above — clicking
+    // now would toggle it closed again.
+    if (await isPopupOpen()) return true;
     // YouTube swallows native (trusted) clicks on this button in some
     // sessions, so rotate click strategies: Selenium click, JS click, and a
     // synthetic pointer-event sequence (Polymer buttons may listen on
