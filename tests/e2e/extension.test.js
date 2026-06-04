@@ -280,7 +280,13 @@ describe("YouTube Subtitle Search Extension", { timeout: 600000 }, () => {
     }
   });
 
-  it("should inject 'Copy transcript' into the three-dot menu", async (t) => {
+  // NOTE: this verifies the Copy-transcript item RENDERS correctly inside
+  // YouTube's real popup DOM. It does not verify the extension's own
+  // auto-injection: a WebDriver click never sets off the extension's
+  // popup-observer path (confirmed headed and headless — only a genuine human
+  // click does, verified manually), and the fallback below uses a test-side
+  // reimplementation of the injection. Real auto-injection coverage is manual.
+  it("should render a 'Copy transcript' item correctly in the three-dot menu", async (t) => {
     skipIfBotBlocked(t);
     try {
       // Make sure we're on the main page
@@ -312,10 +318,10 @@ describe("YouTube Subtitle Search Extension", { timeout: 600000 }, () => {
         return;
       }
 
-      // The extension's auto-injection relies on _isVideoMenuClick flag which
-      // may not be set if YouTube re-rendered the button after setupMenuClickFlag.
-      // If the item wasn't injected automatically, manually inject it to verify
-      // the menu item renders correctly in YouTube's popup.
+      // A WebDriver click doesn't trigger the extension's auto-injection, so
+      // inject the item ourselves to verify it renders correctly in YouTube's
+      // popup. (If a future change makes auto-injection WebDriver-reachable,
+      // this becomes a no-op and the item will already be present.)
       const autoInjected = await driver.executeScript(
         "return !!document.querySelector('#yt-copy-transcript-item')"
       );
