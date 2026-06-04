@@ -17,7 +17,7 @@ const {
   openVideoMenu,
 } = require("./helpers");
 
-describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
+describe("YouTube Subtitle Search Extension", { timeout: 300000 }, () => {
   let driver;
   let skipReason = null;
 
@@ -402,7 +402,7 @@ describe("YouTube Subtitle Search Extension", { timeout: 120000 }, () => {
 // old panel) reliably renders content in headless Firefox. It verifies the extension's
 // selectors (.ytwTranscriptSegmentViewModelTimestamp plus YouTube's attributed-string
 // text spans) can extract timestamps and text from the actual YouTube DOM.
-describe("Modern Transcript UI", { timeout: 120000 }, () => {
+describe("Modern Transcript UI", { timeout: 300000 }, () => {
   let driver;
   let skipReason = null;
 

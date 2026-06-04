@@ -737,10 +737,11 @@ async function injectCopyTranscriptMenuItem(driver) {
  * hydrated, false otherwise — callers should skip hydration-dependent tests
  * on false (not an extension bug).
  *
- * Timings are empirical (8-trial experiment, 2026-06-04): hydration takes
- * 11-14s when it happens, most skeleton sessions recover on the first
- * reload, one of seven needed a third reload, and ~1 in 8 sessions never
- * hydrated at all.
+ * Timings are empirical (8-trial pure-wait experiment, 2026-06-04):
+ * hydration is bimodal — ~1s or ~18-22s — and all sessions hydrated within
+ * 23s without any reload. An earlier 15s wait + reload-retry approach only
+ * appeared to work because each reload re-raced the same too-short window;
+ * reloads restart hydration rather than rescue it, so we just wait longer.
  */
 async function ensureWatchPageHydrated(driver) {
   // Deliberately checks broad hydration markers (title + any action button)
@@ -754,15 +755,14 @@ async function ensureWatchPageHydrated(driver) {
       return !!(title && title.innerText.trim() && actionButton);
     `);
 
-  // One initial wait plus up to three reload retries.
-  for (let attempt = 0; attempt < 4; attempt++) {
+  // One long wait (~3x the slow mode), plus a single reload as a last
+  // resort for the rare genuinely-stuck session.
+  for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) {
       await driver.navigate().refresh();
     }
     try {
-      // Hydration takes 11-14s when it happens, so 15s cuts it too close;
-      // give the initial load extra headroom.
-      await driver.wait(isHydrated, attempt === 0 ? 30000 : 20000);
+      await driver.wait(isHydrated, 60000);
       return true;
     } catch {
       // Timed out — fall through to reload and retry.
