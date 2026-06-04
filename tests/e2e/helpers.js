@@ -782,21 +782,23 @@ async function ensureWatchPageHydrated(driver) {
  * with menu items.
  */
 async function openVideoMenu(driver) {
+  const isPopupOpen = () =>
+    driver.executeScript(`
+      const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
+      if (!dropdown || dropdown.style.display === 'none') return false;
+      const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
+      return items.length > 0;
+    `);
+
   for (let attempt = 0; attempt < 3; attempt++) {
+    // Don't click when the popup is already open — the button toggles, so a
+    // blind re-click after a slow populate would close it again.
+    if (await isPopupOpen()) return true;
     const menuBtn = await waitForElement(driver, VIDEO_MENU_BUTTON_SELECTOR, 10000);
     await driver.executeScript("arguments[0].scrollIntoView({block:'center'})", menuBtn);
     await driver.sleep(500);
     await menuBtn.click();
-    const popupOpen = await driver
-      .wait(async () => {
-        return driver.executeScript(`
-          const dropdown = document.querySelector('ytd-popup-container tp-yt-iron-dropdown');
-          if (!dropdown || dropdown.style.display === 'none') return false;
-          const items = dropdown.querySelectorAll('ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer');
-          return items.length > 0;
-        `);
-      }, 5000)
-      .catch(() => false);
+    const popupOpen = await driver.wait(isPopupOpen, 5000).catch(() => false);
     if (popupOpen) return true;
   }
   return false;

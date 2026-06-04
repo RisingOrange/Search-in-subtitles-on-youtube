@@ -373,7 +373,13 @@ describe("YouTube Subtitle Search Extension", { timeout: 300000 }, () => {
       }
 
       const copyItem = await waitForElement(driver, "#yt-copy-transcript-item", 5000);
-      await copyItem.click();
+      try {
+        await copyItem.click();
+      } catch {
+        // Selenium can fail to scroll items inside YouTube's positioned
+        // dropdown into view — fall back to a direct JS click.
+        await driver.executeScript("arguments[0].click()", copyItem);
+      }
       await driver.sleep(2000);
 
       const transcriptStateAfter = await getTranscriptPanelState();
